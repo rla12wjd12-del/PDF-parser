@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile parsers/page_2_parser.py)",
+      "Bash(python -m py_compile parsers/section_parsers.py)",
+      "Bash(python -m py_compile test_validator.py)",
+      "Bash(python test_validator.py --no-reparse)",
+      "Bash(python -c \"import sys; data=sys.stdin.buffer.read\\(\\); print\\(data.decode\\('cp949', errors='replace'\\)\\)\")",
+      "Bash(ls \"D:\\\\20260406_PDF parser\"/validation_report_*.txt)",
+      "Bash(python -c ':*)",
+      "Bash(python test_validator.py)",
+      "Bash(python -m py_compile main.py)",
+      "Bash(python test_validator.py --pdf \"황규철 경력증명서\\(2025.07.24\\).pdf\")",
+      "Bash(python -c \"import main; print\\('main.py import OK'\\)\")",
+      "Bash(dir /s /b \"D:\\\\PDF parser\")",
+      "Bash(find \"D:\\\\PDF parser\" -type f -name \"*.py\" -exec grep -H \"^import \\\\|^from \" {} \\\\;)",
+      "Bash(xargs wc *)",
+      "Bash(xargs -I {} find {} -type f)"
+    ]
+  }
+}

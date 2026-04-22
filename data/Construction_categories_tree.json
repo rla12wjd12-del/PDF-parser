@@ -1,0 +1,145 @@
+[
+    { "mainCategory": "도로" },
+    { "mainCategory": "고속국도" },
+    { "mainCategory": "국도" },
+    {
+      "mainCategory": "교량",
+      "subCategories": [
+        { "subCategory": "일반교량" },
+        { "subCategory": "장대교량(100m이상)" }
+      ]
+    },
+    { "mainCategory": "공항" },
+    { "mainCategory": "댐" },
+    { "mainCategory": "간척ㆍ매립" },
+    { "mainCategory": "단지조성" },
+    { "mainCategory": "택지개발" },
+    { "mainCategory": "농지개량" },
+    {
+      "mainCategory": "항만관개수로",
+      "subCategories": [
+        { "subCategory": "항만" },
+        { "subCategory": "관개수로" }
+      ]
+    },
+    {
+      "mainCategory": "철도",
+      "subCategories": [
+        { "subCategory": "철도노반시설" },
+        { "subCategory": "철도궤도시설" }
+      ]
+    },
+    { "mainCategory": "지하철" },
+    { "mainCategory": "터널" },
+    { "mainCategory": "발전소" },
+    { "mainCategory": "쓰레기소각시설" },
+    { "mainCategory": "폐수종말처리시설" },
+    { "mainCategory": "하수종말처리시설" },
+    { "mainCategory": "산업시설" },
+    { "mainCategory": "환경시설" },
+    { "mainCategory": "저장ㆍ비축시설" },
+    {
+      "mainCategory": "상수도시설",
+      "subCategories": [
+        { "subCategory": "상수도" },
+        { "subCategory": "정수장" }
+      ]
+    },
+    { "mainCategory": "하수도" },
+    { "mainCategory": "공용청사" },
+    { "mainCategory": "송전" },
+    { "mainCategory": "변전" },
+    {
+      "mainCategory": "하천",
+      "subCategories": [
+        { "subCategory": "하천정비(지방)" },
+        { "subCategory": "하천정비(국가)" },
+        { "subCategory": "하천정비(지방/국가)" }
+      ]
+    },
+    { "mainCategory": "통신" },
+    { "mainCategory": "전력구" },
+    { "mainCategory": "통신·전력구" },
+    { "mainCategory": "기타" },
+    { "mainCategory": "토공" },
+    {
+      "mainCategory": "미장·방수",
+      "subCategories": [
+        { "subCategory": "미장" },
+        { "subCategory": "방수" }
+      ]
+    },
+    { "mainCategory": "석공" },
+    { "mainCategory": "도장" },
+    { "mainCategory": "조적" },
+    {
+      "mainCategory": "비계·구조물해체",
+      "subCategories": [
+        { "subCategory": "비계" },
+        { "subCategory": "구조물해체" }
+      ]
+    },
+    {
+      "mainCategory": "금속구조물창호",
+      "subCategories": [
+        { "subCategory": "금속구조물" },
+        { "subCategory": "창호" }
+      ]
+    },
+    {
+      "mainCategory": "지붕·판금",
+      "subCategories": [
+        { "subCategory": "지붕" },
+        { "subCategory": "판금" }
+      ]
+    },
+    {
+      "mainCategory": "철근·콘크리트",
+      "subCategories": [
+        { "subCategory": "철근" },
+        { "subCategory": "콘크리트" }
+      ]
+    },
+    { "mainCategory": "철물" },
+    { "mainCategory": "기계설비" },
+    {
+      "mainCategory": "상·하수도설비",
+      "subCategories": [
+        { "subCategory": "상수도설비" },
+        { "subCategory": "하수도설비" }
+      ]
+    },
+    {
+      "mainCategory": "보링·그라우팅",
+      "subCategories": [
+        { "subCategory": "보링" },
+        { "subCategory": "그라우팅" }
+      ]
+    },
+    {
+      "mainCategory": "철도·궤도",
+      "subCategories": [
+        { "subCategory": "철도" },
+        { "subCategory": "궤도" }
+      ]
+    },
+    { "mainCategory": "포장" },
+    { "mainCategory": "준설" },
+    { "mainCategory": "수중" },
+    { "mainCategory": "조경식재" },
+    { "mainCategory": "조경시설물설치" },
+    { "mainCategory": "건축물조립" },
+    { "mainCategory": "강구조물" },
+    { "mainCategory": "온실설치" },
+    { "mainCategory": "철강재설치" },
+    { "mainCategory": "삭도설치" },
+    { "mainCategory": "승강기설치" },
+    { "mainCategory": "가스시설시공" },
+    { "mainCategory": "특정열사용기자재시공" },
+    { "mainCategory": "온돌시공" },
+    { "mainCategory": "시설물유지관리" },
+    { "mainCategory": "화약관리(발파)" },
+    { "mainCategory": "소방설비" },
+    { "mainCategory": "실내건축" },
+    { "mainCategory": "기타" }
+  ]

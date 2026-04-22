@@ -1,0 +1,783 @@
+[
+    {
+      "mainCategory": "단독주택",
+      "subCategories": [
+        { "subCategory": "단독주택" },
+        { "subCategory": "다중주택" },
+        { "subCategory": "다가구주택" },
+        { "subCategory": "공관" }
+      ]
+    },
+    {
+      "mainCategory": "공동주택",
+      "subCategories": [
+        { "subCategory": "아파트" },
+        { "subCategory": "연립주택" },
+        { "subCategory": "다세대주택" },
+        {
+          "subCategory": "기숙사",
+          "detailCategories": [
+            { "detailCategory": "일반기숙사" },
+            { "detailCategory": "임대형기숙사" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "제1종 근린생활시설",
+      "subCategories": [
+        {
+          "subCategory": "일용품 소매점",
+          "detailCategories": [
+            { "detailCategory": "식품" },
+            { "detailCategory": "잡화" },
+            { "detailCategory": "의류" },
+            { "detailCategory": "완구" },
+            { "detailCategory": "서적" },
+            { "detailCategory": "건축자재" },
+            { "detailCategory": "의약품" },
+            { "detailCategory": "의료기기" }
+          ]
+        },
+        {
+          "subCategory": "조리·제조·판매 시설",
+          "detailCategories": [
+            { "detailCategory": "휴게음식점" },
+            { "detailCategory": "제과점" }
+          ]
+        },
+        {
+          "subCategory": "위생관리 및 세탁·수선 시설",
+          "detailCategories": [
+            { "detailCategory": "이용원" },
+            { "detailCategory": "미용원" },
+            { "detailCategory": "목욕장" },
+            { "detailCategory": "세탁소" }
+          ]
+        },
+        {
+          "subCategory": "주민 진료·치료 시설",
+          "detailCategories": [
+            { "detailCategory": "의원" },
+            { "detailCategory": "치과의원" },
+            { "detailCategory": "한의원" },
+            { "detailCategory": "침술원" },
+            { "detailCategory": "접골원" },
+            { "detailCategory": "조산원" },
+            { "detailCategory": "안마원" },
+            { "detailCategory": "산후조리원" }
+          ]
+        },
+        {
+          "subCategory": "체육 시설",
+          "detailCategories": [
+            { "detailCategory": "탁구장" },
+            { "detailCategory": "체육도장" }
+          ]
+        },
+        {
+          "subCategory": "공공업무 수행 시설",
+          "detailCategories": [
+            { "detailCategory": "지역자치센터" },
+            { "detailCategory": "파출소" },
+            { "detailCategory": "지구대" },
+            { "detailCategory": "소방서" },
+            { "detailCategory": "우체국" },
+            { "detailCategory": "방송국" },
+            { "detailCategory": "보건소" },
+            { "detailCategory": "공공도서관" },
+            { "detailCategory": "건강보험공단 사무소" }
+          ]
+        },
+        {
+          "subCategory": "주민 공동 이용 시설",
+          "detailCategories": [
+            { "detailCategory": "마을회관" },
+            { "detailCategory": "마을공동작업소" },
+            { "detailCategory": "마을공동구판장" },
+            { "detailCategory": "공중화장실" },
+            { "detailCategory": "대피소" },
+            { "detailCategory": "지역아동센터" }
+          ]
+        },
+        {
+          "subCategory": "생활 필수 인프라 시설",
+          "detailCategories": [
+            { "detailCategory": "변전소" },
+            { "detailCategory": "도시가스배관시설" },
+            { "detailCategory": "통신용 시설" },
+            { "detailCategory": "정수장" },
+            { "detailCategory": "양수장" }
+          ]
+        },
+        {
+          "subCategory": "일반업무시설",
+          "detailCategories": [
+            { "detailCategory": "금융업소" },
+            { "detailCategory": "사무소" },
+            { "detailCategory": "부동산중개사무소" },
+            { "detailCategory": "결혼상담소" },
+            { "detailCategory": "출판사" }
+          ]
+        },
+        { "subCategory": "전기자동차 충전소" },
+        {
+          "subCategory": "동물 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "동물병원" },
+            { "detailCategory": "동물미용실" },
+            { "detailCategory": "동물위탁관리업 시설" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "제2종 근린생활시설",
+      "subCategories": [
+        {
+          "subCategory": "공연장",
+          "detailCategories": [
+            { "detailCategory": "극장" },
+            { "detailCategory": "영화관" },
+            { "detailCategory": "연예장" },
+            { "detailCategory": "음악당" },
+            { "detailCategory": "서커스장" },
+            { "detailCategory": "비디오물감상실" },
+            { "detailCategory": "비디오물소극장" }
+          ]
+        },
+        {
+          "subCategory": "종교집회장",
+          "detailCategories": [
+            { "detailCategory": "교회" },
+            { "detailCategory": "성당" },
+            { "detailCategory": "사찰" },
+            { "detailCategory": "기도원" },
+            { "detailCategory": "수도원" },
+            { "detailCategory": "수녀원" },
+            { "detailCategory": "제실" },
+            { "detailCategory": "사당" }
+          ]
+        },
+        { "subCategory": "자동차영업소" },
+        { "subCategory": "서점" },
+        { "subCategory": "총포판매소" },
+        {
+          "subCategory": "사진 및 표구 시설",
+          "detailCategories": [
+            { "detailCategory": "사진관" },
+            { "detailCategory": "표구점" }
+          ]
+        },
+        {
+          "subCategory": "게임 및 체험 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "청소년게임제공업소" },
+            { "detailCategory": "복합유통게임제공업소" },
+            { "detailCategory": "인터넷컴퓨터게임시설제공업소" },
+            { "detailCategory": "가상현실체험 제공업소" }
+          ]
+        },
+        {
+          "subCategory": "조리·제조·판매 시설",
+          "detailCategories": [
+            { "detailCategory": "휴게음식점" },
+            { "detailCategory": "제과점" }
+          ]
+        },
+        { "subCategory": "일반음식점" },
+        {
+          "subCategory": "동물 관련 시설 및 장의사",
+          "detailCategories": [
+            { "detailCategory": "장의사" },
+            { "detailCategory": "동물병원" },
+            { "detailCategory": "동물미용실" },
+            { "detailCategory": "동물위탁관리업 시설" }
+          ]
+        },
+        {
+          "subCategory": "교육 시설",
+          "detailCategories": [
+            { "detailCategory": "학원" },
+            { "detailCategory": "교습소" },
+            { "detailCategory": "직업훈련소" }
+          ]
+        },
+        {
+          "subCategory": "독서실 및 기원",
+          "detailCategories": [
+            { "detailCategory": "독서실" },
+            { "detailCategory": "기원" }
+          ]
+        },
+        {
+          "subCategory": "주민 체육 활동 시설",
+          "detailCategories": [
+            { "detailCategory": "테니스장" },
+            { "detailCategory": "체력단련장" },
+            { "detailCategory": "에어로빅장" },
+            { "detailCategory": "볼링장" },
+            { "detailCategory": "당구장" },
+            { "detailCategory": "실내낚시터" },
+            { "detailCategory": "골프연습장" },
+            { "detailCategory": "놀이형시설" }
+          ]
+        },
+        {
+          "subCategory": "일반업무시설",
+          "detailCategories": [
+            { "detailCategory": "금융업소" },
+            { "detailCategory": "사무소" },
+            { "detailCategory": "부동산중개사무소" },
+            { "detailCategory": "결혼상담소" },
+            { "detailCategory": "출판사" }
+          ]
+        },
+        { "subCategory": "다중생활시설" },
+        {
+          "subCategory": "제조·가공·수리 시설",
+          "detailCategories": [
+            { "detailCategory": "제조업소" },
+            { "detailCategory": "수리점" }
+          ]
+        },
+        { "subCategory": "단란주점" },
+        {
+          "subCategory": "안마시술소 및 노래연습장",
+          "detailCategories": [
+            { "detailCategory": "안마시술소" },
+            { "detailCategory": "노래연습장" }
+          ]
+        },
+        { "subCategory": "주문배송시설" },
+        { "subCategory": "공유보관시설" }
+      ]
+    },
+    {
+      "mainCategory": "문화 및 집회시설",
+      "subCategories": [
+        { "subCategory": "공연장" },
+        {
+          "subCategory": "집회장",
+          "detailCategories": [
+            { "detailCategory": "예식장" },
+            { "detailCategory": "공회당" },
+            { "detailCategory": "회의장" },
+            { "detailCategory": "마권 장외 발매소" },
+            { "detailCategory": "마권 전화투표소" }
+          ]
+        },
+        {
+          "subCategory": "관람장",
+          "detailCategories": [
+            { "detailCategory": "경마장" },
+            { "detailCategory": "경륜장" },
+            { "detailCategory": "경정장" },
+            { "detailCategory": "자동차 경기장" },
+            { "detailCategory": "체육관" },
+            { "detailCategory": "운동장" }
+          ]
+        },
+        {
+          "subCategory": "전시장",
+          "detailCategories": [
+            { "detailCategory": "박물관" },
+            { "detailCategory": "미술관" },
+            { "detailCategory": "과학관" },
+            { "detailCategory": "문화관" },
+            { "detailCategory": "체험관" },
+            { "detailCategory": "기념관" },
+            { "detailCategory": "산업전시장" },
+            { "detailCategory": "박람회장" }
+          ]
+        },
+        {
+          "subCategory": "동·식물원",
+          "detailCategories": [
+            { "detailCategory": "동물원" },
+            { "detailCategory": "식물원" },
+            { "detailCategory": "수족관" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "종교시설",
+      "subCategories": [
+        { "subCategory": "종교집회장" },
+        { "subCategory": "봉안당" }
+      ]
+    },
+    {
+      "mainCategory": "판매시설",
+      "subCategories": [
+        {
+          "subCategory": "도매시장",
+          "detailCategories": [
+            { "detailCategory": "농수산물도매시장" },
+            { "detailCategory": "농수산물공판장" }
+          ]
+        },
+        {
+          "subCategory": "소매시장",
+          "detailCategories": [
+            { "detailCategory": "대규모 점포" }
+          ]
+        },
+        {
+          "subCategory": "상점",
+          "detailCategories": [
+            { "detailCategory": "청소년게임제공업 시설" },
+            { "detailCategory": "일반게임제공업 시설" },
+            { "detailCategory": "인터넷컴퓨터게임시설제공업 시설" },
+            { "detailCategory": "복합유통게임제공업 시설" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "운수시설",
+      "subCategories": [
+        { "subCategory": "여객자동차터미널" },
+        { "subCategory": "철도시설" },
+        { "subCategory": "공항시설" },
+        { "subCategory": "항만시설" },
+        { "subCategory": "버티포트" }
+      ]
+    },
+    {
+      "mainCategory": "의료시설",
+      "subCategories": [
+        {
+          "subCategory": "병원",
+          "detailCategories": [
+            { "detailCategory": "종합병원" },
+            { "detailCategory": "병원" },
+            { "detailCategory": "치과병원" },
+            { "detailCategory": "한방병원" },
+            { "detailCategory": "정신병원" },
+            { "detailCategory": "요양병원" }
+          ]
+        },
+        {
+          "subCategory": "격리병원",
+          "detailCategories": [
+            { "detailCategory": "전염병원" },
+            { "detailCategory": "마약진료소" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "교육연구시설",
+      "subCategories": [
+        {
+          "subCategory": "학교",
+          "detailCategories": [
+            { "detailCategory": "유치원" },
+            { "detailCategory": "초등학교" },
+            { "detailCategory": "중학교" },
+            { "detailCategory": "고등학교" },
+            { "detailCategory": "전문대학" },
+            { "detailCategory": "대학" },
+            { "detailCategory": "대학교" }
+          ]
+        },
+        {
+          "subCategory": "교육원",
+          "detailCategories": [
+            { "detailCategory": "연수원" }
+          ]
+        },
+        { "subCategory": "직업훈련소" },
+        {
+          "subCategory": "학원 및 교습소",
+          "detailCategories": [
+            { "detailCategory": "학원" },
+            { "detailCategory": "교습소" }
+          ]
+        },
+        {
+          "subCategory": "연구소",
+          "detailCategories": [
+            { "detailCategory": "시험소" },
+            { "detailCategory": "계측계량소" }
+          ]
+        },
+        { "subCategory": "도서관" }
+      ]
+    },
+    {
+      "mainCategory": "노유자시설",
+      "subCategories": [
+        {
+          "subCategory": "아동 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "어린이집" },
+            { "detailCategory": "아동복지시설" }
+          ]
+        },
+        { "subCategory": "노인복지시설" },
+        {
+          "subCategory": "사회복지시설 및 근로복지시설",
+          "detailCategories": [
+            { "detailCategory": "사회복지시설" },
+            { "detailCategory": "근로복지시설" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "수련시설",
+      "subCategories": [
+        {
+          "subCategory": "생활권 수련시설",
+          "detailCategories": [
+            { "detailCategory": "청소년수련관" },
+            { "detailCategory": "청소년문화의집" },
+            { "detailCategory": "청소년특화시설" }
+          ]
+        },
+        {
+          "subCategory": "자연권 수련시설",
+          "detailCategories": [
+            { "detailCategory": "청소년수련원" },
+            { "detailCategory": "청소년야영장" }
+          ]
+        },
+        { "subCategory": "유스호스텔" },
+        { "subCategory": "야영장 시설" }
+      ]
+    },
+    {
+      "mainCategory": "운동시설",
+      "subCategories": [
+        {
+          "subCategory": "일반 체육 시설",
+          "detailCategories": [
+            { "detailCategory": "탁구장" },
+            { "detailCategory": "체육도장" },
+            { "detailCategory": "테니스장" },
+            { "detailCategory": "체력단련장" },
+            { "detailCategory": "에어로빅장" },
+            { "detailCategory": "볼링장" },
+            { "detailCategory": "당구장" },
+            { "detailCategory": "실내낚시터" },
+            { "detailCategory": "골프연습장" },
+            { "detailCategory": "놀이형시설" }
+          ]
+        },
+        { "subCategory": "체육관" },
+        {
+          "subCategory": "운동장",
+          "detailCategories": [
+            { "detailCategory": "육상장" },
+            { "detailCategory": "구기장" },
+            { "detailCategory": "볼링장" },
+            { "detailCategory": "수영장" },
+            { "detailCategory": "스케이트장" },
+            { "detailCategory": "롤러스케이트장" },
+            { "detailCategory": "승마장" },
+            { "detailCategory": "사격장" },
+            { "detailCategory": "궁도장" },
+            { "detailCategory": "골프장" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "업무시설",
+      "subCategories": [
+        { "subCategory": "공공업무시설" },
+        {
+          "subCategory": "일반업무시설",
+          "detailCategories": [
+            { "detailCategory": "금융업소" },
+            { "detailCategory": "사무소" },
+            { "detailCategory": "결혼상담소 등 소개업소" },
+            { "detailCategory": "출판사" },
+            { "detailCategory": "신문사" },
+            { "detailCategory": "오피스텔" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "숙박시설",
+      "subCategories": [
+        {
+          "subCategory": "일반 및 생활숙박시설",
+          "detailCategories": [
+            { "detailCategory": "일반숙박시설" },
+            { "detailCategory": "생활숙박시설" }
+          ]
+        },
+        {
+          "subCategory": "관광숙박시설",
+          "detailCategories": [
+            { "detailCategory": "관광호텔" },
+            { "detailCategory": "수상관광호텔" },
+            { "detailCategory": "한국전통호텔" },
+            { "detailCategory": "가족호텔" },
+            { "detailCategory": "호스텔" },
+            { "detailCategory": "소형호텔" },
+            { "detailCategory": "의료관광호텔" },
+            { "detailCategory": "휴양 콘도미니엄" }
+          ]
+        },
+        { "subCategory": "다중생활시설" }
+      ]
+    },
+    {
+      "mainCategory": "위락시설",
+      "subCategories": [
+        { "subCategory": "단란주점" },
+        { "subCategory": "유흥주점" },
+        { "subCategory": "테마파크업 시설" },
+        {
+          "subCategory": "무도 시설",
+          "detailCategories": [
+            { "detailCategory": "무도장" },
+            { "detailCategory": "무도학원" }
+          ]
+        },
+        { "subCategory": "카지노영업소" }
+      ]
+    },
+    {
+      "mainCategory": "공장"
+    },
+    {
+      "mainCategory": "창고시설",
+      "subCategories": [
+        {
+          "subCategory": "창고",
+          "detailCategories": [
+            { "detailCategory": "일반창고" },
+            { "detailCategory": "냉장 창고" },
+            { "detailCategory": "냉동 창고" }
+          ]
+        },
+        { "subCategory": "하역장" },
+        { "subCategory": "물류터미널" },
+        { "subCategory": "집배송 시설" }
+      ]
+    },
+    {
+      "mainCategory": "위험물 저장 및 처리 시설",
+      "subCategories": [
+        {
+          "subCategory": "주유소 및 석유 판매소",
+          "detailCategories": [
+            { "detailCategory": "주유소" },
+            { "detailCategory": "석유 판매소" }
+          ]
+        },
+        {
+          "subCategory": "액화석유가스 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "액화석유가스 충전소" },
+            { "detailCategory": "액화석유가스 판매소" },
+            { "detailCategory": "액화석유가스 저장소" }
+          ]
+        },
+        {
+          "subCategory": "위험물 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "위험물 제조소" },
+            { "detailCategory": "위험물 저장소" },
+            { "detailCategory": "위험물 취급소" }
+          ]
+        },
+        {
+          "subCategory": "액화가스 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "액화가스 취급소" },
+            { "detailCategory": "액화가스 판매소" }
+          ]
+        },
+        {
+          "subCategory": "유독물 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "유독물 보관시설" },
+            { "detailCategory": "유독물 저장시설" },
+            { "detailCategory": "유독물 판매시설" }
+          ]
+        },
+        {
+          "subCategory": "고압가스 관련 시설",
+          "detailCategories": [
+            { "detailCategory": "고압가스 충전소" },
+            { "detailCategory": "고압가스 판매소" },
+            { "detailCategory": "고압가스 저장소" }
+          ]
+        },
+        { "subCategory": "도료류 판매소" },
+        { "subCategory": "도시가스 제조시설" },
+        { "subCategory": "화약류 저장소" }
+      ]
+    },
+    {
+      "mainCategory": "자동차 관련 시설",
+      "subCategories": [
+        { "subCategory": "주차장" },
+        { "subCategory": "세차장" },
+        { "subCategory": "폐차장" },
+        { "subCategory": "검사장" },
+        { "subCategory": "매매장" },
+        { "subCategory": "정비공장" },
+        {
+          "subCategory": "운전 및 정비 학원",
+          "detailCategories": [
+            { "detailCategory": "운전학원" },
+            { "detailCategory": "정비학원" }
+          ]
+        },
+        {
+          "subCategory": "차고 및 주기장",
+          "detailCategories": [
+            { "detailCategory": "차고" },
+            { "detailCategory": "주기장" }
+          ]
+        },
+        { "subCategory": "전기자동차 충전소" }
+      ]
+    },
+    {
+      "mainCategory": "동물 및 식물 관련 시설",
+      "subCategories": [
+        {
+          "subCategory": "축사",
+          "detailCategories": [
+            { "detailCategory": "양잠 시설" },
+            { "detailCategory": "양봉 시설" },
+            { "detailCategory": "양어 시설" },
+            { "detailCategory": "양돈 시설" },
+            { "detailCategory": "양계 시설" },
+            { "detailCategory": "곤충사육 시설" },
+            { "detailCategory": "부화장" }
+          ]
+        },
+        {
+          "subCategory": "가축시설",
+          "detailCategories": [
+            { "detailCategory": "가축용 운동시설" },
+            { "detailCategory": "인공수정센터" },
+            { "detailCategory": "관리사" },
+            { "detailCategory": "가축용 창고" },
+            { "detailCategory": "가축시장" },
+            { "detailCategory": "동물검역소" },
+            { "detailCategory": "실험동물 사육시설" }
+          ]
+        },
+        { "subCategory": "도축장" },
+        { "subCategory": "도계장" },
+        { "subCategory": "작물 재배사" },
+        { "subCategory": "종묘배양시설" },
+        {
+          "subCategory": "화초 및 분재 온실",
+          "detailCategories": [
+            { "detailCategory": "화초 온실" },
+            { "detailCategory": "분재 온실" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "자원순환 관련 시설",
+      "subCategories": [
+        { "subCategory": "하수 등 처리시설" },
+        { "subCategory": "고물상" },
+        { "subCategory": "폐기물재활용시설" },
+        { "subCategory": "폐기물 처분시설" },
+        { "subCategory": "폐기물감량화시설" }
+      ]
+    },
+    {
+      "mainCategory": "교정시설",
+      "subCategories": [
+        {
+          "subCategory": "교정시설",
+          "detailCategories": [
+            { "detailCategory": "보호감호소" },
+            { "detailCategory": "구치소" },
+            { "detailCategory": "교도소" }
+          ]
+        },
+        { "subCategory": "갱생보호시설" },
+        {
+          "subCategory": "소년원 및 소년분류심사원",
+          "detailCategories": [
+            { "detailCategory": "소년원" },
+            { "detailCategory": "소년분류심사원" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "국방·군사시설"
+    },
+    {
+      "mainCategory": "방송통신시설",
+      "subCategories": [
+        { "subCategory": "방송국" },
+        { "subCategory": "전신전화국" },
+        { "subCategory": "촬영소" },
+        { "subCategory": "통신용 시설" },
+        { "subCategory": "데이터센터" }
+      ]
+    },
+    {
+      "mainCategory": "발전시설"
+    },
+    {
+      "mainCategory": "묘지 관련 시설",
+      "subCategories": [
+        { "subCategory": "화장시설" },
+        { "subCategory": "봉안당" },
+        {
+          "subCategory": "부수 건축물",
+          "detailCategories": [
+            { "detailCategory": "묘지에 부수되는 건축물" },
+            { "detailCategory": "자연장지에 부수되는 건축물" }
+          ]
+        },
+        {
+          "subCategory": "동물 장묘 시설",
+          "detailCategories": [
+            { "detailCategory": "동물화장시설" },
+            { "detailCategory": "동물건조장시설" },
+            { "detailCategory": "동물 전용 납골시설" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "관광 휴게시설",
+      "subCategories": [
+        { "subCategory": "야외음악당" },
+        { "subCategory": "야외극장" },
+        { "subCategory": "어린이회관" },
+        { "subCategory": "관망탑" },
+        { "subCategory": "휴게소" },
+        {
+          "subCategory": "부수 시설",
+          "detailCategories": [
+            { "detailCategory": "공원에 부수되는 시설" },
+            { "detailCategory": "유원지에 부수되는 시설" },
+            { "detailCategory": "관광지에 부수되는 시설" }
+          ]
+        }
+      ]
+    },
+    {
+      "mainCategory": "장례시설",
+      "subCategories": [
+        { "subCategory": "장례식장" },
+        { "subCategory": "동물 전용 장례식장" }
+      ]
+    },
+    {
+      "mainCategory": "야영장 시설"
+    }
+  ]

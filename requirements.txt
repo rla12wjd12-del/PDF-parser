@@ -1,0 +1,7 @@
+pdfplumber
+pillow
+streamlit
+streamlit-image-coordinates
+PyMuPDF
+pandas
+openpyxl>=3.1.0
