@@ -18,7 +18,8 @@ import re
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parsers.page_1_parser import parse_page_1
-from parsers.page_2_parser import parse_page_2, merge_cross_page_tech_overviews, _strip_tail_job_duty, _is_footer_or_header_line
+from parsers.page_2_parser_table_only import parse_page_2
+from parsers.page_2_parser import merge_cross_page_tech_overviews, _strip_tail_job_duty, _is_footer_or_header_line
 from parsers.page_3_parser import (
     parse_page_3,
     _parse_recent_1y_service_stats,
