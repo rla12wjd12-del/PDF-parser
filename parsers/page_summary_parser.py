@@ -50,6 +50,10 @@ def _parse_summary_text(text: str) -> Dict[str, List[Dict[str, Any]]]:
             continue
         if "자격" in ln and "학력" in ln:
             break
+        
+        # 푸터/바코드 안내 문구 제외
+        if any(kw in ln for kw in ["문서하단", "바코드", "위·변조", "확인번호"]):
+            continue
 
         hits = list(_DAYS_ENTRY_RE.finditer(ln))
         if not hits:

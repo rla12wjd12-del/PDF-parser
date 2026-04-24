@@ -1213,37 +1213,51 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                 if str(a.get("수여일") or "").strip() not in ("해당없음", "")
             ]
 
-        # FIX: 동일 수여일에 대해 '종류및근거'가 비어있고, 수여기관 칸에 종류가 합쳐진 중복행 제거.
-        #      (예: 박준서 2012-11-02: "수여기관=건설산업교육원 우수상[...]", 종류는 빈값)
+        # 2026.04.24 개선: 동일 수여일에 대해 정보가 중복되거나 파편화된 행 제거 로직 강화
         if awards:
             cleaned: list[dict] = []
-            for a in awards:
+            # 먼저 길이가 긴 순서대로 정렬하여 "완전한" 레코드를 먼저 처리하도록 한다.
+            awards_sorted = sorted(
+                awards, 
+                key=lambda x: len(str(x.get("수여기관","")) + str(x.get("종류및근거",""))), 
+                reverse=True
+            )
+            
+            for a in awards_sorted:
                 dt = str(a.get("수여일") or "").strip()
                 inst = str(a.get("수여기관") or "").replace("\n", " ").strip()
                 typ = str(a.get("종류및근거") or "").replace("\n", " ").strip()
-                if not dt:
+                combined_a = _norm_award_key_inst(inst + typ)
+                
+                if not dt or dt == "해당없음":
+                    if not any(c.get("수여일") == dt for c in cleaned):
+                        cleaned.append(a)
                     continue
-                if typ:
-                    cleaned.append(a)
-                    continue
-                # typ가 비었으면, 같은 날짜의 다른 행이 inst를 포함(또는 부분일치)하면서 typ가 있으면 중복으로 간주해 제거
-                inst_n = _norm_award_key_inst(inst)
-                dup = False
-                for b in awards:
-                    if b is a:
-                        continue
+
+                # 이미 추가된(더 긴) 레코드들 중에 이 레코드를 포함하는 것이 있는지 확인
+                is_fragment = False
+                for b in cleaned:
                     if str(b.get("수여일") or "").strip() != dt:
                         continue
-                    typ_b = str(b.get("종류및근거") or "").replace("\n", " ").strip()
-                    if not typ_b:
-                        continue
+                    
                     inst_b = str(b.get("수여기관") or "").replace("\n", " ").strip()
-                    inst_b_n = _norm_award_key_inst(inst_b)
-                    if inst_b_n and inst_n and (inst_b_n in inst_n):
-                        dup = True
+                    typ_b = str(b.get("종류및근거") or "").replace("\n", " ").strip()
+                    
+                    # 1) 기관명과 종류가 이미 다른 레코드의 "종류및근거"나 "수여기관+종류"에 포함된 경우
+                    combined_b = _norm_award_key_inst(inst_b + typ_b)
+                    if combined_a and combined_b and combined_a in combined_b:
+                        is_fragment = True
                         break
-                if not dup:
+                    
+                    # 2) 파편화된 케이스: 수여기관에 종류가 잘못 들어간 경우 등 (유저 사례 대응)
+                    if inst and typ_b and inst in typ_b:
+                        is_fragment = True
+                        break
+                
+                if not is_fragment:
                     cleaned.append(a)
+            
+            # 원래 순서(날짜순) 등으로 재정렬할 수도 있지만, 최종적으로는 parse_page_1 등에서 정렬하므로 유지
             awards = cleaned
 
     except Exception as e:

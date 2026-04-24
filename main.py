@@ -746,6 +746,9 @@ def parse_full_document(pdf_path: str) -> dict:
                                 if xi > 0:
                                     ints.append(xi)
                             ints = sorted(set(ints))
+                            # 2026.04.24 요청: 페이지 번호가 여러 개여도 하나만 표시하도록 수정
+                            if ints:
+                                ints = [ints[0]]
                             r["_pdf_pages"] = ints
                             r["_pdf_pages_str"] = ",".join(str(x) for x in ints)
                         except Exception:
