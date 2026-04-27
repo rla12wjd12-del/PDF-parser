@@ -1,0 +1,6 @@
+excel_output/
+json_output/
+
+# Python caches
+__pycache__/
+*.py[cod]
