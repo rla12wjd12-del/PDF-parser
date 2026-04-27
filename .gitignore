@@ -4,3 +4,14 @@ json_output/
 # Python caches
 __pycache__/
 *.py[cod]
+
+# Logs / debug artifacts
+debug-*.log
+parse.log
+*.ndjson
+
+# Excel temp files (Office)
+~$*.xlsx
+
+# Test / tooling caches
+.pytest_cache/

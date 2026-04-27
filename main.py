@@ -18,8 +18,12 @@ import re
 sys.path.insert(0, str(Path(__file__).parent))
 
 from parsers.page_1_parser import parse_page_1
-from parsers.page_2_parser_table_only import parse_page_2
-from parsers.page_2_parser import merge_cross_page_tech_overviews, _strip_tail_job_duty, _is_footer_or_header_line
+from parsers.page_2_parser import parse_page_2
+from parsers.tech_career_common import (
+    merge_cross_page_tech_overviews,
+    _strip_tail_job_duty,
+    _is_footer_or_header_line,
+)
 from parsers.page_3_parser import (
     parse_page_3,
     _parse_recent_1y_service_stats,
@@ -188,6 +192,38 @@ def pick_pdf_file_via_dialog(initial_dir: str | None = None) -> str | None:
         return file_path or None
     except Exception:
         # tkinter 미설치/GUI 불가 환경 등
+        return None
+
+
+def pick_pdf_files_via_dialog(initial_dir: str | None = None) -> list[str] | None:
+    """
+    OS 파일 선택 대화상자를 통해 PDF 파일 경로를 '여러 개' 선택합니다.
+
+    Returns:
+        list[str] | None: 선택된 파일 경로 목록(취소 시 None)
+    """
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            root.attributes("-topmost", True)
+            root.update()
+        except Exception:
+            pass
+
+        file_paths = filedialog.askopenfilenames(
+            title="PDF 파일(들) 선택",
+            initialdir=initial_dir or "",
+            filetypes=[("PDF files", "*.pdf"), ("All files", "*.*")],
+        )
+        root.destroy()
+        if not file_paths:
+            return None
+        return [str(p) for p in file_paths]
+    except Exception:
         return None
 
 
@@ -1160,10 +1196,31 @@ def main():
         help='파일 선택 창을 열어 PDF 파일을 선택합니다 (pdf_path 보다 우선)'
     )
     parser.add_argument(
+        '--pick-multi',
+        action='store_true',
+        help='파일 선택 창을 열어 PDF 파일을 여러 개 선택합니다 (pdf_paths 보다 우선)'
+    )
+    parser.add_argument(
+        '--dir',
+        default=None,
+        metavar='PATH',
+        help='지정한 폴더의 PDF들을 순차 처리합니다 (pdf_paths 보다 우선순위 낮음)'
+    )
+    parser.add_argument(
+        '--recursive',
+        action='store_true',
+        help='--dir 사용 시 하위 폴더까지 재귀적으로 PDF를 찾습니다'
+    )
+    parser.add_argument(
+        '--pattern',
+        default='*.pdf',
+        help="--dir 사용 시 파일 패턴 (기본: '*.pdf')"
+    )
+    parser.add_argument(
         '--out',
         '-o',
         default=None,
-        help='출력 JSON 파일 경로 (미지정 시: {성명 또는 PDF파일명}_{오늘(파싱일자)}.json)'
+        help='출력 JSON 파일/폴더 경로. PDF 1개면 파일 경로, 여러 개면 폴더 경로로 사용 (미지정 시 기본 규칙)'
     )
     parser.add_argument(
         '--validate',
@@ -1285,7 +1342,7 @@ def main():
             return {k: _squash_newlines_in_obj(v) for k, v in obj.items()}
         return obj
 
-    def _parse_one_pdf(pdf_path: str) -> int:
+    def _parse_one_pdf(pdf_path: str, *, out_dir: Path | None = None) -> int:
         # PDF 파일 존재 확인
         if not pdf_path or not Path(pdf_path).exists():
             print(f"[ERROR] PDF 파일을 찾을 수 없습니다: {pdf_path}")
@@ -1308,7 +1365,30 @@ def main():
 
         # JSON 파일로 저장
         JSON_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-        if args.out:
+        if out_dir is not None:
+            # 여러 PDF 처리 모드: out_dir 아래에 기본 파일명 규칙으로 저장
+            name = str((result.get("인적사항") or {}).get("성명") or "").strip()
+            issue_date = datetime.now().strftime("%Y%m%d")
+
+            safe_name = re.sub(r'[<>:"/\\\\|?*\\s]+', "_", name).strip("_")
+            safe_date = re.sub(r"[^0-9]", "", issue_date)
+
+            if not safe_name:
+                safe_name = re.sub(r'[<>:"/\\\\|?*\\s]+', "_", pdf_path_obj.stem).strip("_") or "output"
+            if not safe_date:
+                safe_date = datetime.now().strftime("%Y%m%d")
+
+            stem = f"{safe_name}_{safe_date}"
+            output_path = out_dir / f"{stem}.json"
+            if output_path.exists():
+                n = 2
+                while True:
+                    candidate = out_dir / f"{stem}_{n}.json"
+                    if not candidate.exists():
+                        output_path = candidate
+                        break
+                    n += 1
+        elif args.out:
             output_path = Path(args.out)
             if not output_path.is_absolute():
                 output_path = JSON_OUTPUT_DIR / output_path
@@ -1383,19 +1463,52 @@ def main():
         return 0
 
     # PDF 경로 결정: --pick 우선, 아무 경로도 없으면 선택창 시도
-    pdf_paths = list(args.pdf_paths or [])
-    if args.pick or not pdf_paths:
-        picked = pick_pdf_file_via_dialog()
-        if picked:
-            pdf_paths = [picked]
+    pdf_paths: list[str] = []
+    if args.pick_multi:
+        picked_many = pick_pdf_files_via_dialog()
+        if picked_many:
+            pdf_paths = picked_many
         else:
             print("[ERROR] 파일 선택이 취소되었거나 선택 창을 열 수 없습니다.")
             sys.exit(1)
+    else:
+        pdf_paths = list(args.pdf_paths or [])
+        if args.pick or not pdf_paths:
+            picked = pick_pdf_file_via_dialog()
+            if picked:
+                pdf_paths = [picked]
+            else:
+                print("[ERROR] 파일 선택이 취소되었거나 선택 창을 열 수 없습니다.")
+                sys.exit(1)
+
+    # --dir: pdf_paths가 비었을 때만 폴더 스캔으로 채운다
+    if (not pdf_paths) and args.dir:
+        base = Path(args.dir)
+        if not base.is_absolute():
+            base = BASE_DIR / base
+        if not base.exists() or not base.is_dir():
+            print(f"[ERROR] 폴더를 찾을 수 없습니다: {base}")
+            sys.exit(1)
+        pat = (args.pattern or "*.pdf").strip() or "*.pdf"
+        files = base.rglob(pat) if args.recursive else base.glob(pat)
+        pdf_paths = [str(p) for p in files if p.is_file()]
 
     # 여러 PDF 순차 처리
+    # NOTE: 여러 개 처리 시 --out 은 "출력 폴더"로만 해석한다(파일 경로를 주면 충돌/덮어쓰기 위험).
+    out_dir_for_batch: Path | None = None
+    if len(pdf_paths) >= 2 and args.out:
+        out_candidate = Path(args.out)
+        if not out_candidate.is_absolute():
+            out_candidate = JSON_OUTPUT_DIR / out_candidate
+        # 파일처럼 보이는 경로를 주면 안전을 위해 에러 처리
+        if out_candidate.suffix.lower() == ".json":
+            print("[ERROR] PDF가 여러 개인데 --out 에 JSON 파일 경로가 지정되었습니다. 폴더 경로를 지정해주세요.")
+            sys.exit(1)
+        out_dir_for_batch = out_candidate
+
     overall_rc = 0
     for p in pdf_paths:
-        rc = _parse_one_pdf(p)
+        rc = _parse_one_pdf(p, out_dir=out_dir_for_batch)
         if rc != 0:
             overall_rc = rc
     return overall_rc
