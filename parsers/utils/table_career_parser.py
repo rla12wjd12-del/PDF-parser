@@ -23,6 +23,7 @@ _DATE_FULL = re.compile(r"^\s*(\d{4})\.(\d{2})\.(\d{2})\s*$")
 # 전자는 셀 전체가 날짜 문자열이 아니므로 _DATE_FULL로는 탐지할 수 없다.
 # 따라서 "문자열 어디서든" 날짜 토큰을 찾기 위한 패턴을 별도로 둔다.
 _DATE_TOKEN = re.compile(r"(\d{4})\.(\d{2})\.(\d{2})")
+_DATE_TOKEN_YM = re.compile(r"(\d{4})\.(\d{2})\b")
 _DAYS_PAREN = re.compile(r"\(\s*(\d[\d,]*)\s*일\s*\)")
 
 
@@ -207,6 +208,15 @@ def parse_period_cell(cell_text: str, *, yyyy_mm_dd_to_iso) -> PeriodParse:
     if not dates:
         # 폴백: 줄 단위가 정확히 날짜로 분리돼 있는 케이스(공백/개행만 있는 경우)
         dates = [m.group(0).strip() for m in _DATE_FULL.finditer(s)]
+
+    # 옵션 A: 일부 PDF/추출에서 일(Day)이 드롭되어 'YYYY.MM'까지만 남는 케이스 지원
+    # - 이 경우 'YYYY.MM.01'로 보정해 iso로 변환한다.
+    if not dates:
+        ym = [m.group(0).strip() for m in _DATE_TOKEN_YM.finditer(s)]
+        if len(ym) >= 1:
+            dates = [f"{ym[0]}.01"]
+        if len(ym) >= 2:
+            dates = [f"{ym[0]}.01", f"{ym[1]}.01"]
 
     start_iso = yyyy_mm_dd_to_iso(dates[0]) if len(dates) >= 1 else ""
     s_compact = s.replace(" ", "")

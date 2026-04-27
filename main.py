@@ -563,22 +563,32 @@ def count_pdf_items(ctx: DocumentContext, tech_start: int, cm_start: int,
     except Exception:
         edu_count = len(_EDU_DATE_PAT.findall(page1_combined))
 
-    # --- 근무처: '근무기간' 헤더 ~ 푸터 사이에서 'YYYY.MM.DD ~' 패턴 ---
+    # --- 근무처 ---
+    # FIX: 텍스트 정규식(_WP_START_PAT) 기반 카운팅은
+    #      - 2열 레이아웃에서 한 줄에 '~' 토큰이 2번 나와 과대계상되거나
+    #      - 월(YYYY.MM) 단위로 표기되어 일(DD)이 드롭되면 누락되는 문제가 있다.
+    # 검증 목적에서는 제1쪽 통합 파서(`parse_page_1`)와 동일한 기준(레코드 수)을 사용한다.
     wp_count = 0
-    for page_txt in page1_texts:
-        lines = page_txt.splitlines()
-        in_wp = False
-        for ln in lines:
-            stripped = ln.strip()
-            if "근무기간" in stripped and "상호" in stripped:
-                in_wp = True
-                continue
-            if in_wp:
-                if "본 증명서는" in stripped or "인터넷으로" in stripped:
-                    in_wp = False
+    try:
+        p1 = parse_page_1(ctx, page_num=0) or {}
+        wp_count = len(p1.get("근무처") or [])
+    except Exception:
+        # 폴백(레거시): '근무기간' 헤더 ~ 푸터 사이에서 'YYYY.MM.DD ~' 패턴
+        wp_count = 0
+        for page_txt in page1_texts:
+            lines = page_txt.splitlines()
+            in_wp = False
+            for ln in lines:
+                stripped = ln.strip()
+                if "근무기간" in stripped and "상호" in stripped:
+                    in_wp = True
                     continue
-                hits = _WP_START_PAT.findall(stripped)
-                wp_count += len(hits)
+                if in_wp:
+                    if "본 증명서는" in stripped or "인터넷으로" in stripped:
+                        in_wp = False
+                        continue
+                    hits = _WP_START_PAT.findall(stripped)
+                    wp_count += len(hits)
 
     # --- 국가기술자격: 종목 키워드 + 합격일 날짜가 있는 줄 ---
     license_count = 0

@@ -6,7 +6,7 @@ import re
 
 
 def convert_date_format(date_str: str) -> str:
-    """날짜 형식 변환: YYYY.MM.DD → YYYY-MM-DD"""
+    """날짜 형식 변환: YYYY.MM.DD → YYYY-MM-DD, YYYY.MM → YYYY-MM-01"""
     if not date_str:
         return date_str
     try:
@@ -15,7 +15,7 @@ def convert_date_format(date_str: str) -> str:
             return f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
         m = re.match(r'(\d{4})\.(\d{1,2})', date_str)
         if m:
-            return f"{m.group(1)}-{m.group(2).zfill(2)}"
+            return f"{m.group(1)}-{m.group(2).zfill(2)}-01"
     except Exception:
         pass
     return date_str

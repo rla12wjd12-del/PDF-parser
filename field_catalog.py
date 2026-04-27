@@ -237,8 +237,14 @@ def extract_name_and_grade(cell_text: str) -> Tuple[str, str]:
     if not t:
         return "", ""
     for g in _GRADE_TOKENS:
+        # 1) 가장 흔한 케이스: 공백으로 분리된 '... {등급}'
         if f" {g}" in t:
             name = _norm(t.split(f" {g}", 1)[0])
             return name, g
+        # 2) 추출 편차: 공백이 사라져 '...{등급}'로 붙는 케이스
+        if t.endswith(g) and len(t) > len(g):
+            name = _norm(t[: -len(g)])
+            if name:
+                return name, g
     return "", ""
 

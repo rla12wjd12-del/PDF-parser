@@ -21,6 +21,7 @@ from parsers.section_parsers import (
     parse_license_info,
 )
 from parsers.document_context import DocumentContext
+from parsers.utils.company_change_markers import get_company_change_markers
 
 
 _NATIONAL_TECH_LICENSE_NAMES: set[str] | None = None
@@ -404,10 +405,11 @@ def _normalize_company_markers(s: str) -> str:
     s = s.replace("：", ":")
     # 개행/다중 공백 정리
     s = re.sub(r"\s+", " ", s)
-    # '現 :', '現: ' 등 공백 정리
-    s = re.sub(r"現\s*:\s*", "現:", s)
-    # '흡수합병 :', '흡수합병:' 등 공백 정리
-    s = re.sub(r"흡수합병\s*:\s*", "흡수합병:", s)
+    # 변경 사유 마커 표준화: "키워드 : " → "키워드:"
+    # NOTE: 근무처 상호명 변경 표식은 문서/발급기관/추출기에 따라 다양하게 등장할 수 있어
+    #       여기서는 보수적으로 "키워드 + 콜론" 형태만 정규화한다.
+    for mk in get_company_change_markers():
+        s = re.sub(rf"{re.escape(mk)}\s*:\s*", f"{mk}:", s)
     return s.strip()
 
 
@@ -415,15 +417,13 @@ def _normalize_company(s: str) -> tuple[str, str]:
     s = _normalize_company_markers(s)
     prev = s
     curr = ""
-    # '現:' 또는 '흡수합병:' 이후를 "현재 상호"로 취급
-    if "現:" in s:
-        left, right = s.split("現:", 1)
-        prev = left.strip()
-        curr = right.strip()
-    elif "흡수합병:" in s:
-        left, right = s.split("흡수합병:", 1)
-        prev = (left or "").strip()
-        curr = (right or "").strip()
+    # 변경 사유 마커(現/흡수합병/분할설립/상호변경/법인전환/합병/양수도 등) 이후를 "현재 상호"로 취급
+    for mk in [m + ":" for m in get_company_change_markers()]:
+        if mk in s:
+            left, right = s.split(mk, 1)
+            prev = (left or "").strip()
+            curr = (right or "").strip()
+            break
     else:
         # pdfplumber가 '現' 문자를 드롭한 경우: "구상호 :신상호" 패턴 감지
         if ":" in s:
@@ -436,6 +436,47 @@ def _normalize_company(s: str) -> tuple[str, str]:
             ):
                 prev = left
                 curr = right
+
+    # 추가 규칙: "YYYY.MM.DD :(주)..." 형태의 상호변경 표기 분리
+    # 예) "(주)A 2016.07.24 :(주)B" → 이전=(주)A, 현재=(주)B
+    def _split_date_colon(blob: str) -> tuple[str, str] | None:
+        m = re.search(r"\b(\d{4}\.\d{2}\.\d{2})\s*[:：]\s*(.+)$", blob or "")
+        if not m:
+            return None
+        right = (m.group(2) or "").strip()
+        left = ((blob[: m.start()] or "")).strip()
+        left = re.sub(r"\b\d{4}\.\d{2}\.\d{2}\b", " ", left)
+        left = re.sub(r"\s+", " ", left).strip()
+        if left and right and re.search(r"[가-힣A-Za-z0-9]", right):
+            return left, right
+        return None
+
+    if prev and (not curr):
+        split = _split_date_colon(prev)
+        if split:
+            prev, curr = split
+    elif curr:
+        # 일부 케이스에서는 이전/현재 분리가 실패해 '현재_상호명'에 구상호+날짜+콜론이 그대로 섞인다.
+        split = _split_date_colon(curr)
+        if split:
+            left, right = split
+            if not prev:
+                prev = left
+            curr = right
+
+    # 일부 추출 경로에서는 '현/現' 폴백(콜론)과 실제 변경 마커가 중첩되어
+    # curr 값이 "흡수합병:(주)..."처럼 마커를 포함한 채로 남는다.
+    # 이 경우 마커 접두어를 제거해 현재 상호만 남기고, 이전 상호(prev)는 유지한다.
+    if curr:
+        for mk in get_company_change_markers():
+            mk = str(mk or "").strip()
+            if not mk:
+                continue
+            prefix = mk.rstrip(":") + ":"
+            if curr.startswith(prefix):
+                curr = curr[len(prefix):].strip()
+                break
+
     # 규칙: 현재 상호명이 비어 있으면, 현재에 넣고 이전은 빈 값
     if prev and not curr:
         curr = prev
@@ -449,7 +490,7 @@ def _end_value(end_raw: str) -> str:
         return ""
     if "근무중" in end_compact or ("근" in end_raw and "무" in end_raw):
         return "근무중"
-    return _yyyy_mm_dd_to_iso(end_raw)
+    return _workplace_date_to_iso(end_raw)
 
 
 def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
@@ -463,43 +504,75 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
     out: list[dict] = []
     pending: dict | None = None  # {"l_start","l_co","r_start","r_co"}
 
+    _DATE = r"\d{4}\.\d{2}(?:\.\d{2})?"
     start_row_pat = re.compile(
-        r"^(\d{4}\.\d{2}\.\d{2})\s*~\s*(.+?)\s+(\d{4}\.\d{2}\.\d{2})\s*~\s*(.+)$"
+        rf"^({_DATE})\s*~\s*(.+?)\s+({_DATE})\s*~\s*(.+)$"
     )
     end_row_pat = re.compile(
-        r"^(\d{4}\.\d{2}\.\d{2})\s+"
-        r"(?:現?:(.+?)\s+)?"
-        r"(\d{4}\.\d{2}\.\d{2}|근\s*무\s*중)"
-        r"\s*(?::\s*(.+))?$"
+        rf"^({_DATE})\s+"
+        rf"(?:現?:(.+?)\s+)?"
+        rf"({_DATE}|근\s*무\s*중)"
+        # 우측 현재상호는 ':현재상호'로 오기도 하고('2016.07.24 :(주)A'),
+        # 그냥 '흡수합병:(주)B'처럼 바로 이어지기도 한다.
+        rf"\s*(?:(?::\s*)?(.+))?$"
     )
+
+    # 표/텍스트 추출 편차로 인해 "회사명"과 "사유:신상호"가 서로 다른 줄로 내려오는 경우가 있다.
+    # 예) "(주)A" 다음 줄에 "분할설립:(주)B" → 직전 레코드의 회사명에 결합해 이전/현재를 재분리한다.
+    reasons = [m for m in get_company_change_markers() if m not in {"現", "현"}]
+    reason_alt = "|".join(re.escape(x) for x in reasons) if reasons else "흡수합병"
+    standalone_reason_pat = re.compile(rf"^({reason_alt})\s*[:：]\s*(.+)$")
 
     i = 0
     while i < len(body_lines):
         ln = body_lines[i]
 
         # 일부 추출에서는 라인 앞에 '근무처' 같은 라벨이 붙는다.
-        dm = re.search(r"\d{4}\.\d{2}\.\d{2}", ln)
+        # NOTE: 근무처는 'YYYY.MM'만 있는 구간도 있어, 가장 앞의 날짜 토큰(YYYY.MM(.DD)?)부터 잘라 정규식을 안정화한다.
+        dm = re.search(_DATE, ln)
         if dm and dm.start() > 0:
             ln = ln[dm.start():].strip()
 
-        merger = re.search(
-            r"^(\d{4}\.\d{2}\.\d{2})\s+흡수합병:\s*(.+?)\s+(\d{4}\.\d{2}\.\d{2})\s*:\s*(.+)$",
+        # 사유만 단독 라인으로 내려오는 케이스(직전 레코드에 결합)
+        sr = standalone_reason_pat.match(ln)
+        if sr and out:
+            last = out[-1]
+            last_prev = str(last.get("이전_상호명") or "").strip()
+            last_curr = str(last.get("현재_상호명") or "").strip()
+            # 직전 레코드가 "현재만" 채워진 상태라면(회사명 단독 라인으로 해석된 상태)만 보정한다.
+            right = sr.group(2).strip()
+            looks_like_company = bool(re.search(r"(주\)|\(|[가-힣A-Za-z0-9])", right))
+            if (not last_prev) and last_curr and looks_like_company:
+                combined = f"{last_curr} {sr.group(1).strip()}:{sr.group(2).strip()}"
+                p, c = _normalize_company(combined)
+                last["이전_상호명"] = p
+                last["현재_상호명"] = c
+                i += 1
+                continue
+
+        # 표 셀 병합 등으로 "사유:구상호 종료일:신상호"가 한 줄로 내려오는 케이스(흡수합병/분할설립/상호변경 등)
+        change_line = re.search(
+            rf"^({_DATE})\s+({reason_alt})\s*[:：]\s*(.+?)\s+"
+            rf"({_DATE})\s*[:：]\s*(.+)$",
             ln,
         )
-        if merger:
+        if change_line:
             # 2열 서식에서 우측 컬럼의 종료행이 "흡수합병:" 형식으로 내려오는 경우가 있다.
             # 이때는 pending(좌/우 시작행)을 먼저 종료시킨 후, 별도 merger 레코드는 추가하지 않는다.
-            if pending and (pending.get("r_start") == merger.group(1)):
-                l_end = merger.group(1)  # 우측 시작일이 좌측 종료일로 내려오는 케이스
-                r_end = merger.group(3)
+            if pending and (pending.get("r_start") == change_line.group(1)):
+                l_end = change_line.group(1)  # 우측 시작일이 좌측 종료일로 내려오는 케이스
+                r_end = change_line.group(4)
 
                 l_prev, l_curr = _normalize_company(str(pending.get("l_co") or ""))
-                # 우측은 흡수합병을 현재상호로 반영
-                r_prev, r_curr = _normalize_company(f"{merger.group(2).strip()} 흡수합병:{merger.group(4).strip()}")
+                # 우측은 "사유:현재상호"로 반영
+                reason = change_line.group(2).strip()
+                r_prev, r_curr = _normalize_company(
+                    f"{change_line.group(3).strip()} {reason}:{change_line.group(5).strip()}"
+                )
 
                 out.append(
                     {
-                        "근무기간_시작": _yyyy_mm_dd_to_iso(str(pending.get("l_start") or "")),
+                        "근무기간_시작": _workplace_date_to_iso(str(pending.get("l_start") or "")),
                         "근무기간_종료": _end_value(l_end),
                         "이전_상호명": l_prev,
                         "현재_상호명": l_curr,
@@ -507,7 +580,7 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
                 )
                 out.append(
                     {
-                        "근무기간_시작": _yyyy_mm_dd_to_iso(str(pending.get("r_start") or "")),
+                        "근무기간_시작": _workplace_date_to_iso(str(pending.get("r_start") or "")),
                         "근무기간_종료": _end_value(r_end),
                         "이전_상호명": r_prev,
                         "현재_상호명": r_curr,
@@ -516,10 +589,10 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
                 pending = None
             else:
                 out.append({
-                    "근무기간_시작": _yyyy_mm_dd_to_iso(merger.group(1)),
-                    "근무기간_종료": _yyyy_mm_dd_to_iso(merger.group(3)),
-                    "이전_상호명": merger.group(2).strip(),
-                    "현재_상호명": merger.group(4).strip(),
+                    "근무기간_시작": _workplace_date_to_iso(change_line.group(1)),
+                    "근무기간_종료": _workplace_date_to_iso(change_line.group(4)),
+                    "이전_상호명": change_line.group(3).strip(),
+                    "현재_상호명": change_line.group(5).strip(),
                 })
             i += 1
             continue
@@ -537,36 +610,96 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
 
         m = end_row_pat.search(ln)
         if pending:
+            l_prev_override: str | None = None
+            l_curr_override: str | None = None
             if m:
                 l_end = m.group(1)
                 l_curr_inline = (m.group(2) or "").strip()
                 r_end = m.group(3)
                 r_curr = (m.group(4) or "").strip()
             else:
-                # end row가 '퇴사사유:...' 같은 잡문구를 끼고 나오면 정규식이 실패할 수 있다.
-                # 이때는 라인 내 날짜 2개를 사용해 (좌종료, 우종료)로 해석한다.
-                dates = re.findall(r"\d{4}\.\d{2}\.\d{2}", ln)
-                if len(dates) >= 2:
-                    l_end, r_end = dates[0], dates[1]
-                    l_curr_inline = ""
-                    # 우측 현재상호는 보통 ':' 뒤에 온다(있으면 사용)
-                    r_curr = ""
-                    if ":" in ln:
-                        r_curr = (ln.split(":", 1)[1] or "").strip()
+                # 2열 레이아웃에서 좌측 종료일 뒤에 '사유:신상호'가 끼고, 이어서 우측 종료일이 나오는 케이스
+                # 예) "2007.08.01 분할설립:(주)B 2016.07.24 :(주)C"
+                end_row_with_reason_pat = re.compile(
+                    rf"^({_DATE})\s+({reason_alt})\s*[:：]\s*(.+?)\s+({_DATE}|근\s*무\s*중)"
+                    rf"\s*(?:(?::\s*)?(.+))?$"
+                )
+                mr = end_row_with_reason_pat.search(ln)
+                if mr:
+                    l_end = mr.group(1)
+                    # 좌측 회사명에 변경 사유를 결합해 이전/현재 분리(_normalize_company가 처리)
+                    l_curr_inline = f"{mr.group(2).strip()}:{mr.group(3).strip()}"
+                    r_end = mr.group(4)
+                    r_curr = (mr.group(5) or "").strip()
                 else:
-                    i += 1
-                    continue
+                    # PDF 텍스트 추출 인코딩이 깨져 사유(분할설립 등) 키워드가 mojibake로 들어오는 경우가 있다.
+                    # 이때는 마커 단어 자체를 신뢰하지 않고, "어떤 토큰:" 뒤에 회사명이 오는 형태를
+                    # 좌측 상호 변경으로 간주해 (이전=기존 좌측 회사명, 현재=콜론 뒤 회사명)으로 직접 설정한다.
+                    generic_reason_pat = re.compile(
+                        rf"^({_DATE})\s+([^\s:：]{{1,30}})\s*[:：]\s*(.+?)\s+({_DATE}|근\s*무\s*중)"
+                        rf"\s*(?:(?::\s*)?(.+))?$"
+                    )
+                    gm = generic_reason_pat.search(ln)
+                    if gm:
+                        l_end = gm.group(1)
+                        l_prev_override = str(pending.get('l_co') or '').strip()
+                        l_curr_override = (gm.group(3) or '').strip()
+                        r_end = gm.group(4)
+                        r_curr = (gm.group(5) or "").strip()
+                        l_curr_inline = ""
+                    else:
+                        # 또 다른 변형: "사유:신상호"가 공백 없이 한 토큰으로 붙어오는 케이스
+                        # 예) "2007.08.01 분할설립:(주)B 2016.07.24 :(주)C"
+                        glued_token_pat = re.compile(
+                            rf"^({_DATE})\s+(\S+)\s+({_DATE}|근\s*무\s*중)"
+                            rf"\s*(?:(?::\s*)?(.+))?$"
+                        )
+                        gt = glued_token_pat.search(ln)
+                        if gt:
+                            tok = (gt.group(2) or "").strip()
+                            tok = tok.replace("：", ":")
+                            if ":" in tok:
+                                _reason, _new = tok.split(":", 1)
+                                _new = (_new or "").strip()
+                                if _new:
+                                    l_end = gt.group(1)
+                                    l_prev_override = str(pending.get("l_co") or "").strip()
+                                    l_curr_override = _new
+                                    r_end = gt.group(3)
+                                    r_curr = (gt.group(4) or "").strip()
+                                    l_curr_inline = ""
+                        if l_prev_override is None:
+                            # end row가 '퇴사사유:...' 같은 잡문구를 끼고 나오면 정규식이 실패할 수 있다.
+                            # 이때는 라인 내 날짜 2개를 사용해 (좌종료, 우종료)로 해석한다.
+                            dates = re.findall(r"\d{4}\.\d{2}\.\d{2}", ln)
+                            if len(dates) >= 2:
+                                l_end, r_end = dates[0], dates[1]
+                                l_curr_inline = ""
+                                # 우측 현재상호는 보통 ':' 뒤에 온다(있으면 사용)
+                                r_curr = ""
+                                if ":" in ln:
+                                    r_curr = (ln.split(":", 1)[1] or "").strip()
+                            else:
+                                i += 1
+                                continue
 
-            l_co = pending["l_co"]
-            if l_curr_inline:
-                l_co = l_co + " 現:" + l_curr_inline
-
-            l_prev, l_curr = _normalize_company(l_co)
+            if l_prev_override is not None and l_curr_override is not None:
+                l_prev, l_curr = l_prev_override, l_curr_override
+            else:
+                l_co = pending["l_co"]
+                if l_curr_inline:
+                    # l_curr_inline이 "현상호"인 경우도 있고("現:..."),
+                    # "사유:신상호"로 들어오는 경우도 있어 그냥 결합만 해준다.
+                    if re.match(rf"^({reason_alt}):", l_curr_inline):
+                        l_co = l_co + " " + l_curr_inline
+                    else:
+                        l_co = l_co + " 現:" + l_curr_inline
+                l_prev, l_curr = _normalize_company(l_co)
             r_prev, r_curr2 = _normalize_company(pending["r_co"] + (f" 現:{r_curr}" if r_curr else ""))
 
             out.append(
                 {
-                    "근무기간_시작": _yyyy_mm_dd_to_iso(pending["l_start"]),
+                    "근무기간_시작": _workplace_date_to_iso(pending["l_start"]),
                     "근무기간_종료": _end_value(l_end),
                     "이전_상호명": l_prev,
                     "현재_상호명": l_curr,
@@ -574,7 +707,7 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
             )
             out.append(
                 {
-                    "근무기간_시작": _yyyy_mm_dd_to_iso(pending["r_start"]),
+                    "근무기간_시작": _workplace_date_to_iso(pending["r_start"]),
                     "근무기간_종료": _end_value(r_end),
                     "이전_상호명": r_prev,
                     "현재_상호명": r_curr2,
@@ -584,14 +717,14 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
             i += 1
             continue
 
-        ongoing = re.match(r"^(\d{4}\.\d{2}\.\d{2})\s*~\s*(.+)$", ln)
+        ongoing = re.match(rf"^({_DATE})\s*~\s*(.+)$", ln)
         if ongoing:
             # 다음 줄에 '근무중'이 내려오는 일반 케이스
             if i + 1 < len(body_lines):
                 nxt_compact = re.sub(r"\s+", "", body_lines[i + 1])
                 if "근무중" in nxt_compact:
                     out.append({
-                        "근무기간_시작": _yyyy_mm_dd_to_iso(ongoing.group(1)),
+                        "근무기간_시작": _workplace_date_to_iso(ongoing.group(1)),
                         "근무기간_종료": "근무중",
                         "이전_상호명": "",
                         "현재_상호명": ongoing.group(2).strip(),
@@ -603,7 +736,7 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
             tail = " ".join(body_lines[i + 1 : i + 6]) if i + 1 < len(body_lines) else ""
             if not re.search(r"\d{4}\.\d{2}\.\d{2}", tail) and ("퇴" in tail or "사" in tail or "유" in tail or "본 증명서는" in tail):
                 out.append({
-                    "근무기간_시작": _yyyy_mm_dd_to_iso(ongoing.group(1)),
+                    "근무기간_시작": _workplace_date_to_iso(ongoing.group(1)),
                     "근무기간_종료": "근무중",
                     "이전_상호명": "",
                     "현재_상호명": ongoing.group(2).strip(),
@@ -643,54 +776,7 @@ def _parse_workplaces_from_text(page_text: str) -> list[dict]:
     table_lines = [re.sub(r'\s+', ' ', ln).strip() for ln in lines]
     out: list[dict] = []
 
-    def _normalize_company_markers(s: str) -> str:
-        """
-        회사명 문자열 내 '現:' 표기를 추출 편차(전각 콜론/공백/개행)까지 흡수해 표준화한다.
-        """
-        s = (s or "")
-        # 전각 콜론 → 반각 콜론
-        s = s.replace("：", ":")
-        # 개행/다중 공백 정리
-        s = re.sub(r"\s+", " ", s)
-        # '現 :', '現: ' 등 공백 정리
-        s = re.sub(r"現\s*:\s*", "現:", s)
-        # '흡수합병 :', '흡수합병:' 등 공백 정리
-        s = re.sub(r"흡수합병\s*:\s*", "흡수합병:", s)
-        return s.strip()
-
-    def _normalize_company(s: str) -> tuple[str, str]:
-        s = _normalize_company_markers(s)
-        prev = s
-        curr = ""
-        # '現:' 또는 '흡수합병:' 이후를 "현재 상호"로 취급
-        if "現:" in s:
-            left, right = s.split("現:", 1)
-            prev = left.strip()
-            curr = right.strip()
-        elif "흡수합병:" in s:
-            left, right = s.split("흡수합병:", 1)
-            prev = (left or "").strip()
-            curr = (right or "").strip()
-        else:
-            # pdfplumber가 '現' 문자를 드롭한 경우: "구상호 :신상호" 패턴 감지
-            # 예: "(주)창설토목건축사사무소 :(주)창설", "한일개발(주) :한진건설(주)"
-            if ":" in s:
-                left, right = s.split(":", 1)
-                left = left.strip()
-                right = right.strip()
-                # 콜론이 상호 변경 표기일 가능성이 높은 경우만 분리
-                # - 우측에 (주)가 포함되거나, 우측이 한글/영문/숫자/괄호로 일정 길이 이상인 경우
-                if left and right and (
-                    "(주)" in right
-                    or re.search(r"[가-힣A-Za-z0-9]", right)
-                ):
-                    prev = left
-                    curr = right
-        # 규칙: 현재 상호명이 비어 있으면, 현재에 넣고 이전은 빈 값
-        if prev and not curr:
-            curr = prev
-            prev = ""
-        return prev, curr
+    # NOTE: 근무처 회사명 마커/이전-현재 분리는 파일 상단의 공용 함수(_normalize_company*)를 사용한다.
 
     def _end_value(end_raw: str) -> str:
         end_compact = (end_raw or "").replace(" ", "")
@@ -698,17 +784,18 @@ def _parse_workplaces_from_text(page_text: str) -> list[dict]:
             return ""
         if "근무중" in end_compact or ("근" in end_raw and "무" in end_raw):
             return "근무중"
-        return _yyyy_mm_dd_to_iso(end_raw)
+        return _workplace_date_to_iso(end_raw)
 
     # 패턴: "좌시작 ~ 좌상호  우시작 ~ 우상호" (시작행)
-    start_row_pat = re.compile(r'(\d{4}\.\d{2}\.\d{2})\s*~\s*(.+?)\s+(\d{4}\.\d{2}\.\d{2})\s*~\s*(.+)$')
+    _DATE = r"\d{4}\.\d{2}(?:\.\d{2})?"
+    start_row_pat = re.compile(rf'({_DATE})\s*~\s*(.+?)\s+({_DATE})\s*~\s*(.+)$')
     # 패턴: "좌종료 [現:좌현재상호] 우종료 [:우현재상호]" (종료행)
     # pdfplumber가 '現' 문자를 드롭해 " :(주)창설 2021.12.31" 형태가 되는 케이스도 처리
     end_row_pat = re.compile(
-        r'^(\d{4}\.\d{2}\.\d{2})\s+'          # 좌종료일
-        r'(?:現?:(.+?)\s+)?'                    # [옵션] 좌현재상호 (現: 또는 :로 시작)
-        r'(\d{4}\.\d{2}\.\d{2}|근\s*무\s*중)'  # 우종료일
-        r'\s*(?::\s*(.+))?$'                   # [옵션] 우현재상호
+        rf'^({_DATE})\s+'                        # 좌종료일
+        rf'(?:現?:(.+?)\s+)?'                    # [옵션] 좌현재상호 (現: 또는 :로 시작)
+        rf'({_DATE}|근\s*무\s*중)'               # 우종료일
+        rf'\s*(?:(?::\s*)?(.+))?$'               # [옵션] 우현재상호(콜론 유무 모두 허용)
     )
 
     pending = None  # {"l_start","l_co","r_start","r_co"}
@@ -716,7 +803,7 @@ def _parse_workplaces_from_text(page_text: str) -> list[dict]:
     for ln in table_lines:
         # 일부 추출에서는 라인 앞에 '근무처' 같은 라벨이 붙어 start_row_pat가 실패한다.
         # 첫 날짜 패턴부터 잘라내어 정규식을 안정화한다.
-        dm = re.search(r"\d{4}\.\d{2}\.\d{2}", ln)
+        dm = re.search(_DATE, ln)
         if dm and dm.start() > 0:
             ln = ln[dm.start():].strip()
 
@@ -764,13 +851,13 @@ def _parse_workplaces_from_text(page_text: str) -> list[dict]:
             r_prev, r_curr2 = _normalize_company(pending["r_co"] + (f" 現:{r_curr}" if r_curr else ""))
 
             out.append({
-                "근무기간_시작": _yyyy_mm_dd_to_iso(pending["l_start"]),
+                "근무기간_시작": _workplace_date_to_iso(pending["l_start"]),
                 "근무기간_종료": _end_value(l_end),
                 "이전_상호명": l_prev,
                 "현재_상호명": l_curr
             })
             out.append({
-                "근무기간_시작": _yyyy_mm_dd_to_iso(pending["r_start"]),
+                "근무기간_시작": _workplace_date_to_iso(pending["r_start"]),
                 "근무기간_종료": _end_value(r_end),
                 "이전_상호명": r_prev,
                 "현재_상호명": r_curr2
@@ -825,6 +912,140 @@ def _yyyy_mm_dd_to_iso(date_str: str) -> str:
         except ValueError:
             return ""
     return s
+
+
+def _yyyy_mm_to_iso(date_str: str) -> str:
+    """
+    'YYYY.MM'를 'YYYY-MM-01'로 변환.
+    근무처 등에서 월 단위로만 표기되는 구간을 지원한다.
+    """
+    s = (date_str or "").strip()
+    if not s:
+        return ""
+    m = re.fullmatch(r"(\d{4})\.(\d{2})", s)
+    if not m:
+        return ""
+    yyyy, mm = int(m.group(1)), int(m.group(2))
+    try:
+        return datetime(yyyy, mm, 1).strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def _workplace_date_to_iso(token: str) -> str:
+    s = (token or "").strip()
+    if not s:
+        return ""
+    iso = _yyyy_mm_dd_to_iso(s)
+    if iso and re.fullmatch(r"\d{4}-\d{2}-\d{2}", iso):
+        return iso
+    iso2 = _yyyy_mm_to_iso(s)
+    return iso2 or iso
+
+
+def _parse_workplace_body_lines_single(body_lines: list[str]) -> list[dict]:
+    """
+    근무처 단일 컬럼(라인 기반) 파서.
+    지원 형식(예):
+      1990.01 ~
+      1991.01
+      신화건설(주)
+      1991.01.14 ~
+      1999.08.01
+      한진건설(주)
+      흡수합병:(주)한진중공업
+    """
+    if not body_lines:
+        return []
+
+    out: list[dict] = []
+
+    start_pat = re.compile(r"^(?P<s>\d{4}\.\d{2}(?:\.\d{2})?)\s*~\s*$")
+    end_pat = re.compile(r"^(?P<e>\d{4}\.\d{2}(?:\.\d{2})?)\s*$")
+    ongoing_pat = re.compile(r"^근\s*무\s*중\s*$")
+
+    markers = [str(m or "").strip() for m in get_company_change_markers()]
+    markers = [m for m in markers if m]
+
+    def _is_marker_line(s: str) -> bool:
+        t = (s or "").strip()
+        if not t:
+            return False
+        for mk in markers:
+            if t.startswith(mk):
+                return True
+            if t.startswith(mk.rstrip(":") + ":"):
+                return True
+        return False
+
+    cur_start_raw = ""
+    cur_end_raw = ""
+    company_buf: list[str] = []
+
+    def _flush_record() -> None:
+        nonlocal cur_start_raw, cur_end_raw, company_buf
+        if not cur_start_raw:
+            return
+        start_iso = _workplace_date_to_iso(cur_start_raw)
+        if ongoing_pat.match(cur_end_raw or ""):
+            end_iso = "근무중"
+        else:
+            end_iso = _workplace_date_to_iso(cur_end_raw)
+        company_raw = " ".join(x for x in company_buf if x).strip()
+        if not company_raw:
+            cur_start_raw, cur_end_raw, company_buf = "", "", []
+            return
+        prev, curr = _normalize_company(company_raw)
+        out.append(
+            {
+                "근무기간_시작": start_iso,
+                "근무기간_종료": end_iso,
+                "이전_상호명": prev,
+                "현재_상호명": curr,
+            }
+        )
+        cur_start_raw, cur_end_raw, company_buf = "", "", []
+
+    i = 0
+    while i < len(body_lines):
+        ln = (body_lines[i] or "").strip()
+        if not ln:
+            i += 1
+            continue
+
+        m_s = start_pat.match(ln)
+        if m_s:
+            _flush_record()
+            cur_start_raw = m_s.group("s")
+            cur_end_raw = ""
+            company_buf = []
+            i += 1
+            continue
+
+        if cur_start_raw and not cur_end_raw:
+            if ongoing_pat.match(ln):
+                cur_end_raw = "근무중"
+                i += 1
+                continue
+            m_e = end_pat.match(ln)
+            if m_e:
+                cur_end_raw = m_e.group("e")
+                i += 1
+                continue
+
+        if cur_start_raw:
+            if any(k in ln for k in ["근무처", "근무기간", "상호"]):
+                i += 1
+                continue
+            # 사유 라인이 별도 줄이면 그대로 붙인다(이전/현재 분리는 _normalize_company가 담당)
+            if _is_marker_line(ln):
+                company_buf.append(ln)
+            else:
+                company_buf.append(ln)
+        i += 1
+
+    _flush_record()
+    return out
 
 
 # 학력: 한 줄에 "졸업일 학교 … 학위[상태]"가 오고, 다음 줄이 "학력 YYYY.MM.DD …"처럼
@@ -972,6 +1193,84 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
             result['등급']['건설사업관리_직무분야_등급'] = match.group(4)
             result['등급']['건설사업관리_전문분야'] = ''
             result['등급']['건설사업관리_전문분야_등급'] = ''
+
+        # 카탈로그 기반 폴백: '**' 구분자가 없는 문서에서도 '직무분야/전문분야 + 등급' 토큰을 복원한다.
+        # - data/field_catalog.json을 우선 사용(없으면 xlsx/기본 폴백)
+        try:
+            if not match:
+                from field_catalog import get_field_catalog, best_match_specialty  # lazy import (순환/부하 회피)
+
+                catalog = get_field_catalog(project_root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+                grade_tokens_pat = r"(특급|고급|중급|초급)"
+
+                def _cut(src: str, start_kw: str, end_kws: list[str]) -> str:
+                    if not src:
+                        return ""
+                    sidx = src.find(start_kw)
+                    if sidx < 0:
+                        return ""
+                    sub = src[sidx + len(start_kw) :]
+                    epos = None
+                    for ek in end_kws:
+                        j = sub.find(ek)
+                        if j >= 0:
+                            epos = j if epos is None else min(epos, j)
+                    return sub[:epos] if epos is not None else sub
+
+                # 설계·시공 등 / 건설사업관리 블록을 나눠서 각각에서 직무/전문/등급 추출
+                design_block = _cut(text_normalized, "설계·시공 등", ["건설사업관리", "품질관리"])
+                cm_block = _cut(
+                    text_normalized,
+                    "건설사업관리",
+                    ["품질관리", "국가기술자격", "학력", "교육훈련", "상훈", "벌점", "근무처", "1. 기술경력"],
+                )
+
+                def _pick_job_and_grade(block: str) -> tuple[str, str]:
+                    for jf in catalog.job_fields:
+                        m = re.search(rf"{re.escape(jf)}\\s*{grade_tokens_pat}", block or "")
+                        if m:
+                            return jf, m.group(1)
+                    return "", ""
+
+                def _pick_specialty_and_grade(block: str) -> tuple[str, str]:
+                    # 전문분야는 긴 문자열 우선(오탐 방지)
+                    for sp in sorted(catalog.all_specialties, key=len, reverse=True):
+                        if not sp:
+                            continue
+                        m = re.search(rf"{re.escape(sp)}\\s*{grade_tokens_pat}", block or "")
+                        if m:
+                            return sp, m.group(1)
+                    sp2 = best_match_specialty(block or "", catalog)
+                    if sp2:
+                        m2 = re.search(rf"{re.escape(sp2)}\\s*{grade_tokens_pat}", block or "")
+                        if m2:
+                            return sp2, m2.group(1)
+                    return "", ""
+
+                jf, jg = _pick_job_and_grade(design_block)
+                sp, sg = _pick_specialty_and_grade(design_block)
+                if jf and jg:
+                    result["등급"]["설계시공_등_직무분야"] = jf
+                    result["등급"]["설계시공_등_직무분야_등급"] = jg
+                if sp and sg:
+                    result["등급"]["설계시공_등_전문분야"] = sp
+                    result["등급"]["설계시공_등_전문분야_등급"] = sg
+
+                jf, jg = _pick_job_and_grade(cm_block)
+                sp, sg = _pick_specialty_and_grade(cm_block)
+                if jf and jg:
+                    result["등급"]["건설사업관리_직무분야"] = jf
+                    result["등급"]["건설사업관리_직무분야_등급"] = jg
+                if sp and sg:
+                    result["등급"]["건설사업관리_전문분야"] = sp
+                    result["등급"]["건설사업관리_전문분야_등급"] = sg
+
+                # 품질관리 등급(등급 토큰만 있어도 채움)
+                m_q = re.search(rf"품질관리\\s*{grade_tokens_pat}", text_normalized)
+                if m_q:
+                    result["등급"]["품질관리_등급"] = m_q.group(1)
+        except Exception:
+            pass
         
         # 국가기술자격 파싱 (텍스트 폴백: 표 추출 실패 케이스 대응)
         # - 기존 코드는 '토목기사' 하드코딩이라 대부분 누락됨
@@ -1246,12 +1545,14 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
             if parsed:
                 result["교육훈련"].append(parsed)
         
-        # 근무처: 표준 서식(근무기간·상호 블록) 줄 단위 파싱 + 구형 단일 정규식 보조
+        # 근무처: (1) 단일 컬럼(YYYY.MM 지원) 라인 기반 → (2) 기존 2열 라인 기반 → (3) 구형 정규식 보조
         wp_body = _workplace_body_lines_from_text(combined_text)
+        for w in _parse_workplace_body_lines_single(wp_body):
+            result["근무처"].append(w)
         for w in _parse_workplace_body_lines(wp_body):
             result["근무처"].append(w)
 
-        work_pattern = r'(\d{4}\.\d{2}\.\d{2})\s*~\s*(\d{4}\.\d{2}\.\d{2}|근\s*무\s*중)\s+((?:[가-힣]+\(주\)|\(주\)[가-힣]+))'
+        work_pattern = r'(\d{4}\.\d{2}(?:\.\d{2})?)\s*~\s*(\d{4}\.\d{2}(?:\.\d{2})?|근\s*무\s*중)\s+((?:[가-힣]+\(주\)|\(주\)[가-힣]+))'
         for match in re.finditer(work_pattern, text_normalized):
             start_date = match.group(1)
             end_date = match.group(2).replace(' ', '')
@@ -1260,13 +1561,27 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
 
             current_company = ""
             remaining_text = text_normalized[match_end:]
-            current_match = re.match(r'\s*(?:現:|흡수합병\s*:)\s*([가-힣]+\(주\)|\(주\)[가-힣]+)', remaining_text)
+            marker_alt = "|".join(re.escape(m) for m in get_company_change_markers()) or "現"
+            current_match = re.match(
+                rf"\s*(?:{marker_alt})\s*[:：]\s*([가-힣]+\(주\)|\(주\)[가-힣]+)",
+                remaining_text,
+            )
             if current_match:
                 current_company = current_match.group(1).strip()
+            else:
+                # 2열/혼합 레이아웃에서 "종료일 + 사유:신상호"가 다음 토큰으로 바로 이어지는 케이스 보강
+                # 예) "... 2003.09.21 ~ 2007.08.01 (주)A 2007.08.01 분할설립:(주)B ..."
+                # → 직전 근무처(2003.09.21~2007.08.01)의 현재상호는 (주)B 로 간주해야 한다.
+                boundary_match = re.match(
+                    rf"\s*{re.escape(end_date)}\s+(?:{marker_alt})\s*[:：]\s*([가-힣]+\(주\)|\(주\)[가-힣]+)",
+                    remaining_text,
+                )
+                if boundary_match:
+                    current_company = boundary_match.group(1).strip()
 
             result['근무처'].append({
-                "근무기간_시작": _yyyy_mm_dd_to_iso(start_date),
-                "근무기간_종료": "근무중" if ("근무중" in end_date or ("근" in end_date and "무" in end_date)) else _yyyy_mm_dd_to_iso(end_date),
+                "근무기간_시작": _workplace_date_to_iso(start_date),
+                "근무기간_종료": "근무중" if ("근무중" in end_date or ("근" in end_date and "무" in end_date)) else _workplace_date_to_iso(end_date),
                 "이전_상호명": "" if not current_company else company_name,
                 "현재_상호명": current_company or company_name
             })
@@ -1285,6 +1600,50 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
                 continue
             wp_seen.add(k)
             wp_dedup.append(w)
+
+        # 최종 보정: 일부 추출 경로에서 상호 변경 표기가 '현재_상호명'에 합쳐져 남는 케이스 정리
+        for w in wp_dedup:
+            if not isinstance(w, dict):
+                continue
+            cur = str(w.get("현재_상호명") or "").strip()
+            if not cur:
+                continue
+            if re.search(r"\b\d{4}\.\d{2}\.\d{2}\s*[:：]\s*", cur):
+                p, c = _normalize_company(cur)
+                if c and c != cur:
+                    if not str(w.get("이전_상호명") or "").strip():
+                        w["이전_상호명"] = p
+                    w["현재_상호명"] = c
+
+        # 경계 보정: 다음 근무처의 "이전_상호명"이 직전 근무처의 "현재_상호명 변경 결과"로 쓰이는 케이스
+        # (2열 레이아웃에서 '분할설립/흡수합병/상호변경' 등이 다음 행(다음 기간) 시작쪽에 붙어 내려오는 경우)
+        # 규칙(보수적):
+        # - 직전 레코드: 이전_상호명 비어있고 현재_상호명만 있음
+        # - 다음 레코드: 이전_상호명/현재_상호명 모두 존재
+        # - 다음 시작일 == 직전 종료일
+        # → 직전의 (이전,현재) = (직전 현재, 다음 이전)로 보정
+        for i in range(1, len(wp_dedup)):
+            prev = wp_dedup[i - 1]
+            nxt = wp_dedup[i]
+            if not isinstance(prev, dict) or not isinstance(nxt, dict):
+                continue
+            prev_end = str(prev.get("근무기간_종료") or "").strip()
+            nxt_start = str(nxt.get("근무기간_시작") or "").strip()
+            if not prev_end or not nxt_start or prev_end != nxt_start:
+                continue
+            prev_prev = str(prev.get("이전_상호명") or "").strip()
+            prev_curr = str(prev.get("현재_상호명") or "").strip()
+            nxt_prev = str(nxt.get("이전_상호명") or "").strip()
+            nxt_curr = str(nxt.get("현재_상호명") or "").strip()
+            if prev_prev:
+                continue
+            if not prev_curr or not nxt_prev or not nxt_curr:
+                continue
+            # 다음 이전상호가 '분할설립/흡수합병...' 같은 비회사명 파편이면 제외
+            if (":" in nxt_prev) or ("：" in nxt_prev):
+                continue
+            prev["이전_상호명"] = prev_curr
+            prev["현재_상호명"] = nxt_prev
         wp_dedup.sort(key=lambda x: (x.get("근무기간_시작") or ""))
         result["근무처"] = wp_dedup
     
@@ -1363,19 +1722,31 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
         page0 = ctx.get_page(page_num) if page_num is not None else None
         pdf_path = getattr(ctx, "pdf_path", None)
 
-        # 1) 등급: 전부 비어있거나(기존), 일부 필드가 비어있으면(보강) section_parsers.parse_grade_info로 보강
+        # 1) 등급: 텍스트 기반은 레이아웃/추출 편차(** 누락, 줄분리 등)에 취약하다.
+        #    - 전부 비어있는 경우뿐 아니라, "부분 누락"이 있으면 표/좌표 기반 파서로 보강한다.
         try:
             grade = result.get("등급") or {}
             grade_vals = []
             if isinstance(grade, dict):
                 grade_vals = [str(v or "").strip() for v in grade.values()]
             all_empty = (not grade_vals) or all((not v) for v in grade_vals)
-            # 부분 누락도 보강 대상(특히 품질관리_등급)
-            need_quality_fill = False
+            # 부분 누락도 보강 대상(직무/전문/등급 중 하나라도 비면 보강)
+            need_any_fill = False
             if isinstance(grade, dict):
-                need_quality_fill = not str(grade.get("품질관리_등급") or "").strip()
+                expected_keys = [
+                    "설계시공_등_직무분야",
+                    "설계시공_등_직무분야_등급",
+                    "설계시공_등_전문분야",
+                    "설계시공_등_전문분야_등급",
+                    "건설사업관리_직무분야",
+                    "건설사업관리_직무분야_등급",
+                    "건설사업관리_전문분야",
+                    "건설사업관리_전문분야_등급",
+                    "품질관리_등급",
+                ]
+                need_any_fill = any((not str(grade.get(k) or "").strip()) for k in expected_keys)
 
-            if (all_empty or need_quality_fill) and page0 is not None:
+            if (all_empty or need_any_fill) and page0 is not None:
                 g2 = parse_grade_info(page0, pdf_path=pdf_path, page_num=page_num) or {}
                 if isinstance(g2, dict) and g2:
                     # section_parsers 출력 키 → JSON 스키마 키로 매핑

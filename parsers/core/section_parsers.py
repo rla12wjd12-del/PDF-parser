@@ -21,7 +21,9 @@ from parsers.table_settings import extract_tables_merged, table_set_has_header_s
 from field_catalog import best_match_specialty, extract_name_and_grade, get_field_catalog
 
 # 직무분야/전문분야 카탈로그(엑셀 기반, 실패 시 폴백)
-_CATALOG = get_field_catalog(project_root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# NOTE: data/field_catalog.json은 repo root의 data/ 아래에 있으므로, core/ 하위에서 2단계 더 올라간 경로를 root로 준다.
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+_CATALOG = get_field_catalog(project_root=_REPO_ROOT)
 BASIC_FIELDS = list(_CATALOG.job_fields)
 
 # ============================================
@@ -102,6 +104,118 @@ _AWARD_SECTION_END = re.compile(
     re.MULTILINE,
 )
 _TYPE_TAIL_HINT = re.compile(r"(표창|훈장|포장|감사장|장려|감사|\[제\s*\d+호\]|제\s*\d+\s*호)")
+_AWARD_TYPE_TOKENS = ("표창장", "표창패", "훈장", "포장", "감사장", "상장", "유공표창", "우수상")
+
+
+def _normalize_award_type_text(s: str) -> str:
+    """
+    상훈 종류/근거 문자열을 정규화한다.
+    - 섹션 라벨(상훈) 유입 제거
+    - '제99-2 30호' 같이 숫자 토큰이 셀/워드 단위로 쪼개진 케이스 결합
+    - 공백 축약
+    """
+    t = str(s or "").replace("\n", " ").strip()
+    if not t:
+        return ""
+    # 라벨 오염 제거(문장 중간 삽입도 있어 단어 경계로 제거)
+    t = re.sub(r"\b상훈\b", " ", t).strip()
+    # '제99-2 30호' -> '제99-230호' (공백/하이픈 주변 공백 정리)
+    t = re.sub(r"(제\s*\d+\s*[-–]\s*\d+)\s+(\d+\s*호)", r"\1\2", t)
+    # 표/셀 분리로 타입 토큰 앞쪽이 깨져 앞에 잡음이 붙는 케이스 제거:
+    # 예) '장[ 21337] 표창장[21337]' -> '표창장[21337]'
+    # 예) '...기여] 감사장[감리원...' 처럼 앞에 설명이 붙으면 '감사장[...]'부터로 절단
+    for tok in _AWARD_TYPE_TOKENS:
+        pos = t.find(tok)
+        if pos > 0:
+            t = t[pos:].strip()
+            break
+    t = re.sub(r"\s+", " ", t).strip()
+
+    # FIX: 표 추출/continuation 병합 과정에서 같은 근거 문구가
+    # 대괄호 닫힘(]) 뒤에 "부분 중복"으로 한 번 더 붙는 케이스가 있다.
+    # 예) '표창장[...기여한공이큼] 직무에정려하여...공이큼]'
+    # - tail이 괄호 안 본문과 "부분 중복"이면 제거
+    # - tail이 본문과 완전 substring이 아니어도(중간 일부 누락) LCS 비율이 높으면 제거
+    try:
+        if "]" in t:
+            head, tail = t.split("]", 1)
+            tail = tail.strip()
+            if tail:
+                # 뒤에 또 다른 상훈 토큰이 없고, tail이 head(괄호 안)에서 유래한 중복일 때만 절단
+                if (not any(tok in tail for tok in _AWARD_TYPE_TOKENS)) and (len(tail) >= 6):
+                    # 비교용 정규화: 공백 제거 + 괄호/기호 제거(중복 감지용)
+                    def _cmp_norm(x: str) -> str:
+                        x2 = re.sub(r"\s+", "", (x or ""))
+                        # 대괄호/괄호/구두점 등 제거(의미 없는 차이 흡수)
+                        x2 = re.sub(r"[\[\]\(\)\{\}<>\"'“”‘’·,，\.]", "", x2)
+                        return x2
+
+                    # head에서 '[...]' 본문만 분리(가능하면 본문 기준으로 중복을 판단)
+                    inside = ""
+                    if "[" in head:
+                        inside = head.split("[", 1)[1]
+                    inside_n = _cmp_norm(inside)
+                    head_n = _cmp_norm(head)
+                    tail_n = _cmp_norm(tail).strip("]")
+
+                    def _lcs_len(a: str, b: str) -> int:
+                        # O(nm) DP (문자열이 짧아 실용적)
+                        if not a or not b:
+                            return 0
+                        # 작은 쪽을 열로 사용
+                        if len(a) < len(b):
+                            short, long = a, b
+                        else:
+                            short, long = b, a
+                        prev = [0] * (len(short) + 1)
+                        for ch in long:
+                            cur = [0]
+                            for j, sh in enumerate(short, start=1):
+                                if ch == sh:
+                                    cur.append(prev[j - 1] + 1)
+                                else:
+                                    cur.append(max(cur[-1], prev[j]))
+                            prev = cur
+                        return prev[-1]
+
+                    # 1) substring이면 제거(가장 안전)
+                    if tail_n and (tail_n in inside_n or tail_n in head_n):
+                        t = head.strip() + "]"
+                    else:
+                        # 2) substring은 아니지만 본문과 유사도가 매우 높으면 제거
+                        # (중간 일부가 누락된 중복 조각 케이스)
+                        base = inside_n or head_n
+                        if tail_n and base:
+                            lcs = _lcs_len(tail_n, base)
+                            # tail 대부분이 base에서 유래하면 중복으로 간주
+                            if (lcs / max(1, len(tail_n))) >= 0.85:
+                                t = head.strip() + "]"
+    except Exception:
+        pass
+    return t
+
+
+def _award_type_quality_score(s: str) -> int:
+    """
+    동일 수여일+기관 병합 시, 더 "그럴듯한" 종류/근거를 고르기 위한 점수.
+    길이만으로 고르면 '사 표창장...' 같은 깨진 파편이 이길 수 있어 보정한다.
+    """
+    t = _normalize_award_type_text(s)
+    if not t:
+        return -10
+    score = 0
+    if any(tok in t for tok in _AWARD_TYPE_TOKENS):
+        score += 3
+    # 대괄호가 닫혀 있으면(번호가 완결) 가산
+    if ("[" in t) and ("]" in t) and (t.count("[") == t.count("]")):
+        score += 1
+    # 헤더/라벨이 섞여 있으면 감점
+    if any(bad in t for bad in ["수여일", "수여기관", "종류", "근거", "상훈"]):
+        score -= 2
+    # 숫자 토큰이 과도하게 분리된 흔적 감점
+    if re.search(r"제\s*\d+\s*[-–]\s*\d+\s+\d+\s*호", t):
+        score -= 1
+    return score
 
 
 def _norm_award_key_inst(s: str) -> str:
@@ -192,7 +306,36 @@ def _split_merged_award_triples(
         return [(d_cell, str(institution or "").strip(), str(type_and_basis or "").strip())]
 
     inst_lines = [x.strip() for x in re.split(r"[\n\r]+", str(institution or "")) if x.strip()]
-    type_lines = [x.strip() for x in re.split(r"[\n\r]+", str(type_and_basis or "")) if x.strip()]
+    raw_type_lines = [x.strip() for x in re.split(r"[\n\r]+", str(type_and_basis or "")) if x.strip()]
+
+    def _looks_like_new_award_type_line(s: str) -> bool:
+        t = (s or "").strip()
+        if not t:
+            return False
+        if any(tok in t for tok in _AWARD_TYPE_TOKENS):
+            return True
+        if ("[" in t or "]" in t) and re.search(r"(표창|훈장|포장|감사장|상장|유공)", t):
+            return True
+        if _TYPE_TAIL_HINT.search(t):
+            return True
+        return False
+
+    # 줄바꿈으로 1개 항목이 여러 라인으로 쪼개지면(continuation),
+    # 단순 index 매핑이 깨져 "다음 날짜" 레코드로 꼬리가 넘어갈 수 있다.
+    # 새 항목 시작처럼 보이지 않는 라인은 직전 라인에 이어붙인다.
+    type_lines: list[str] = []
+    cur = ""
+    for ln in raw_type_lines:
+        if not cur:
+            cur = ln
+            continue
+        if _looks_like_new_award_type_line(ln):
+            type_lines.append(cur)
+            cur = ln
+        else:
+            cur = (cur + " " + ln).strip()
+    if cur:
+        type_lines.append(cur)
     out: List[tuple[str, str, str]] = []
     for idx, d in enumerate(dates):
         inst = inst_lines[idx] if idx < len(inst_lines) else (inst_lines[-1] if inst_lines else "")
@@ -313,7 +456,7 @@ def _merge_award_lists(primary: List[Dict[str, Any]], secondary: List[Dict[str, 
     def _ingest(a: Dict[str, Any]) -> None:
         dt = str(a.get("수여일") or "").strip()
         inst = str(a.get("수여기관") or "").replace("\n", " ").strip()
-        typ = str(a.get("종류및근거") or "").replace("\n", " ").strip()
+        typ = _normalize_award_type_text(a.get("종류및근거") or "")
         if not dt:
             return
         k = (dt, _norm_award_key_inst(inst))
@@ -323,7 +466,11 @@ def _merge_award_lists(primary: List[Dict[str, Any]], secondary: List[Dict[str, 
             return
         i = by_key[k]
         cur = merged[i]
-        if len(typ) > len(str(cur.get("종류및근거") or "")):
+        cur_typ = str(cur.get("종류및근거") or "").strip()
+        # 길이 우선 대신 "품질 점수" 우선으로 선택
+        if _award_type_quality_score(typ) > _award_type_quality_score(cur_typ) or (
+            _award_type_quality_score(typ) == _award_type_quality_score(cur_typ) and len(typ) > len(cur_typ)
+        ):
             cur["종류및근거"] = typ
         if inst and not str(cur.get("수여기관") or "").strip():
             cur["수여기관"] = inst
@@ -432,6 +579,109 @@ def parse_grade_info(page, *, pdf_path: str | None = None, page_num: int | None 
                                         break
                                 if 'quality_grade' in grade_info:
                                     break
+
+        # 표 기반에서 직무/전문분야가 깨지는 PDF가 있어, 레이아웃(라인) 기반으로 보강한다.
+        # - '**' 같은 구분자가 없어도, '토목특급', '토목시공 특급'처럼 "카탈로그명 + 등급"이 붙어 있는 경우를 복원한다.
+        try:
+            need_any = any(
+                k not in grade_info
+                for k in [
+                    "design_work_field",
+                    "design_work_grade",
+                    "design_specialty",
+                    "design_specialty_grade",
+                    "cm_work_field",
+                    "cm_work_grade",
+                    "cm_specialty",
+                    "cm_specialty_grade",
+                ]
+            )
+            if need_any and pdf_path is not None and page_num is not None:
+                try:
+                    from parsers.layout_extractor import extract_lines as _layout_extract_lines
+
+                    lines = _layout_extract_lines(
+                        pdf_path=pdf_path,
+                        page_num=page_num,
+                        pdfplumber_page=page,
+                        engine="auto",
+                        y_tolerance=2.0,
+                        join_gap=1.0,
+                    )
+                except Exception:
+                    lines = []
+
+                src = "\n".join([ln for ln in (lines or []) if (ln or "").strip()])
+                if src:
+                    grade_tokens_pat = r"(특급|고급|중급|초급)"
+
+                    # 등급 표는 대개:
+                    #  - "설계·시공 등 건설사업관리" (섹션 헤더)
+                    #  - "직무분야 전문분야 직무분야 전문분야" (컬럼 헤더)
+                    #  - "<직무+등급> <전문+등급> <직무+등급> <전문+등급>" (값 행)
+                    # 형태로 추출된다. 섹션 헤더가 같은 줄에 붙어있으면 단순 substring cut이 깨지므로,
+                    # '직무분야/전문분야' 헤더 다음 "값 행"을 직접 잡는다.
+                    src_lines = [ln.strip() for ln in src.splitlines() if (ln or "").strip()]
+                    header_idx = -1
+                    for i, ln in enumerate(src_lines):
+                        if ("직무분야" in ln) and ("전문분야" in ln):
+                            header_idx = i
+                            break
+                    value_ln = ""
+                    if header_idx >= 0:
+                        for j in range(header_idx + 1, min(header_idx + 6, len(src_lines))):
+                            cand = src_lines[j].strip()
+                            if not cand:
+                                continue
+                            # 중간에 '등급' 같은 라벨 라인이 끼는 케이스를 건너뛴다.
+                            if cand == "등급":
+                                continue
+                            # 값 행은 보통 등급 토큰을 포함한다.
+                            if not re.search(grade_tokens_pat, cand):
+                                continue
+                            value_ln = cand
+                            break
+
+                    if value_ln:
+                        grade_tokens = ("특급", "고급", "중급", "초급")
+
+                        def _split_token(tok: str) -> tuple[str, str]:
+                            t = (tok or "").strip()
+                            for g in grade_tokens:
+                                if t.endswith(g) and len(t) > len(g):
+                                    return t[: -len(g)].strip(), g
+                            # 공백 분리 케이스는 상위 split으로 이미 분리되는 편이라 여기선 보수적으로 빈 처리
+                            return "", ""
+
+                        job_hits: list[tuple[str, str]] = []
+                        spec_hits: list[tuple[str, str]] = []
+                        job_set = set(BASIC_FIELDS)
+                        for tok in value_ln.split():
+                            nm, g = _split_token(tok)
+                            if not nm or not g:
+                                continue
+                            if nm in job_set:
+                                job_hits.append((nm, g))
+                                continue
+                            sp = best_match_specialty(nm, _CATALOG) or best_match_specialty(tok, _CATALOG)
+                            if sp:
+                                spec_hits.append((sp, g))
+
+                        # 좌→우 순서대로 설계/CM에 매핑(중복이 있으면 0/1번째 사용)
+                        if len(job_hits) >= 1 and "design_work_field" not in grade_info:
+                            grade_info["design_work_field"] = job_hits[0][0]
+                            grade_info["design_work_grade"] = job_hits[0][1]
+                        if len(spec_hits) >= 1 and "design_specialty" not in grade_info:
+                            grade_info["design_specialty"] = spec_hits[0][0]
+                            grade_info["design_specialty_grade"] = spec_hits[0][1]
+                        if len(job_hits) >= 2 and "cm_work_field" not in grade_info:
+                            grade_info["cm_work_field"] = job_hits[1][0]
+                            grade_info["cm_work_grade"] = job_hits[1][1]
+                        if len(spec_hits) >= 2 and "cm_specialty" not in grade_info:
+                            grade_info["cm_specialty"] = spec_hits[1][0]
+                            grade_info["cm_specialty_grade"] = spec_hits[1][1]
+        except Exception:
+            pass
 
         # 표 기반에서 품질관리 등급을 못 찾는 PDF가 있어, 단어 위치 기반으로 폴백한다.
         # (extract_tables가 '품질관리' 셀을 누락/병합하는 케이스)
@@ -1212,54 +1462,68 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
             date_pat = re.compile(r"^\d{4}\.\d{2}\.\d{2}\b")
 
             for i, ln in enumerate(lines):
-                # '수여일 2004.10.01 ...' 처럼 라벨이 앞에 붙는 케이스가 있어
-                # 날짜가 "줄 시작"이 아니어도 매칭한다.
                 if date_dot not in ln:
                     continue
-                # 날짜 토큰 위치부터 잘라 표준화
-                pos = ln.find(date_dot)
-                if pos < 0:
-                    continue
-                ln = ln[pos:].strip()
-                # 같은 라인에 기관이 없으면 스킵(다른 셀/줄로 깨진 케이스 방지)
-                if inst not in ln and (inst_c not in _compact(ln)):
-                    continue
+                # 기존 로직은 "날짜/기관/종류"가 같은 줄에 있어야 안정적으로 동작했는데,
+                # 실제 PDF에선 (날짜) / (기관) / (종류및근거)가 각각 다른 줄로 쪼개질 수 있다.
+                # 따라서 "해당 날짜가 나타난 줄부터 다음 날짜 전까지"를 하나의 레코드 블록으로 합친 뒤,
+                # 그 블록에서 기관명 이후를 종류/근거로 취한다.
 
-                # 날짜 이후 tail을 만들고, 기관 뒤를 우선 잘라낸다.
-                tail = ln
-                if inst and inst in tail:
-                    tail = tail.split(inst, 1)[1].strip()
-                else:
-                    tail = tail.split(date_dot, 1)[1].strip()
-                    if inst:
-                        tail = tail.replace(inst, " ").strip()
-                tail = re.sub(r"\s+", " ", tail).strip()
-
-                # 다음 줄 continuation 병합 (다음 수여일 시작 전까지)
-                j = i + 1
-                cont_parts: list[str] = []
+                # 1) 레코드 블록 수집: i ~ (다음 날짜 시작 전)
+                chunk_parts: list[str] = []
+                j = i
                 while j < len(lines):
                     ln2 = lines[j].strip()
                     if not ln2:
                         j += 1
                         continue
-                    if date_pat.match(ln2):
+                    if j > i and date_pat.match(ln2):
                         break
                     if _AWARD_SECTION_END.match(ln2):
                         break
                     # 헤더류 제거
-                    if ("수여일" in ln2 and "수여기관" in ln2.replace(" ", "")) or ("상훈" == ln2):
+                    if ("수여일" in ln2 and "수여기관" in ln2.replace(" ", "")) or (ln2 == "상훈"):
                         j += 1
                         continue
-                    cont_parts.append(re.sub(r"\s+", " ", ln2).strip())
+                    # 다음 섹션 제목이 한 줄로 섞이는 오염 방지
+                    if _is_award_table_boundary_row(ln2):
+                        break
+                    chunk_parts.append(re.sub(r"\s+", " ", ln2).strip())
                     j += 1
                     # 너무 길게 확장하지 않도록 상한(오탐 방지)
-                    if len(cont_parts) >= 3:
+                    if len(chunk_parts) >= 6:
                         break
 
-                full = " ".join([p for p in [tail] + cont_parts if p]).strip()
-                full = re.sub(r"\s+", " ", full).strip()
-                return full
+                chunk = " ".join([p for p in chunk_parts if p]).strip()
+                chunk = re.sub(r"\s+", " ", chunk).strip()
+                if not chunk:
+                    continue
+
+                # 2) chunk에서 date 이후 텍스트만 남기기
+                if date_dot in chunk:
+                    chunk_tail = chunk.split(date_dot, 1)[1].strip()
+                else:
+                    # 날짜가 라벨 뒤에 붙어 깨진 경우 대비: compact로 재탐색(최후 폴백)
+                    chunk_tail = chunk
+                chunk_tail = re.sub(r"\s+", " ", chunk_tail).strip()
+                if not chunk_tail:
+                    continue
+
+                # 3) 기관명이 chunk_tail 안 어딘가에 있으면 "기관 뒤"를 종류/근거로 사용
+                if inst and inst in chunk_tail:
+                    tail = chunk_tail.split(inst, 1)[1].strip()
+                else:
+                    # 공백/특수문자 차이로 직접 포함이 실패하면 compact 비교 후, 원문에서 최대한 안전하게 제거
+                    if inst_c and inst_c in _compact(chunk_tail):
+                        # 원문에서 기관 문자열의 정확한 위치를 찾기 어렵기 때문에,
+                        # 우선 date 이후 전체를 취하고, 기관명이 그대로 있으면 제거한다.
+                        tail = chunk_tail.replace(inst, " ").strip() if inst else chunk_tail
+                    else:
+                        # 기관이 아예 안 잡힌 케이스: date 이후 전체를 반환(그래도 멀티라인은 복원됨)
+                        tail = chunk_tail
+
+                tail = re.sub(r"\s+", " ", tail).strip()
+                return tail
             return ""
 
         tables = extract_tables_merged(page)
@@ -1267,6 +1531,42 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
             tables,
             ["수여일", "수여기관", "상훈"],
         ):
+            def _looks_like_award_type_token(s: str) -> bool:
+                """
+                '표창장[...]/훈장증[...]'처럼 수여기관 컬럼에 들어가면 안 되는
+                상훈 종류 토큰을 휴리스틱으로 판정한다.
+                """
+                t = (s or "").strip()
+                if not t:
+                    return False
+                # 대괄호/번호가 붙는 문서가 많아 힌트로 사용
+                if "[" in t or "]" in t:
+                    if any(k in t for k in ["표창", "훈장", "포장", "감사장", "상장", "감사"]):
+                        return True
+                if any(k in t for k in ["표창장", "훈장증", "포장증", "감사장"]):
+                    return True
+                return False
+
+            def _looks_like_institution_name(s: str) -> bool:
+                t = (s or "").strip()
+                if not t:
+                    return False
+                # 날짜/라벨/구분 텍스트는 배제
+                if re.match(r"^\d{4}\.\d{2}\.\d{2}$", t):
+                    return False
+                if any(k in t for k in ["수여일", "수여기관", "종류", "근거", "상훈", "해당없음"]):
+                    return False
+                # 너무 긴 문장은 기관명이라기보다 종류/근거일 확률이 높다
+                if len(t) > 40:
+                    return False
+                # 기관명은 보통 한글/공백/괄호/점 정도로 구성
+                if not re.search(r"[가-힣A-Za-z]", t):
+                    return False
+                # '표창장/훈장증' 같은 타입 토큰은 기관명이 아니다
+                if _looks_like_award_type_token(t):
+                    return False
+                return True
+
             for table in tables:
                 # FIX: "수여일" 텍스트가 없는 테이블은 상훈 표가 아님 → 스킵.
                 # 교육훈련/근무처가 하나의 대형 테이블로 합쳐지는 PDF에서
@@ -1352,6 +1652,31 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                         institution = str(row[institution_col] or "").strip() if institution_col < len(row) else ""
                         type_and_basis = str(row[type_col] or "").strip() if type_col < len(row) else ""
 
+                        # ── 열 밀림/빈 스페이서 컬럼 보정 ─────────────────────────────
+                        # 일부 PDF는 헤더에는 빈 컬럼('')이 끼는데, 데이터 행은 그 빈 컬럼이 채워져
+                        # (기관이 왼쪽 컬럼에, 종류가 '수여기관' 컬럼에 들어오는) 열 어긋남이 발생한다.
+                        # 예:
+                        #   header: ['', '수여일', '', '수여기관', '종류 및 근거']
+                        #   row   : ['', '2015.11.25', '국토교통부', '표창장[10574]', '']
+                        # 이 경우를 행 단위로 감지하여 기관/종류를 재배치한다.
+                        try:
+                            left_idx = institution_col - 1
+                            left_cell = str(row[left_idx] or "").strip() if 0 <= left_idx < len(row) else ""
+                            header_left = str(header_row[left_idx] or "").strip() if 0 <= left_idx < len(header_row) else ""
+                            header_left_empty = (not header_left) or (header_left.lower() in {"none", "null"})
+
+                            if header_left_empty and left_cell and _looks_like_institution_name(left_cell):
+                                # 케이스 A: type_col이 비고, institution_col에 '표창장/훈장증'이 들어간 경우
+                                if (not type_and_basis) and _looks_like_award_type_token(institution):
+                                    type_and_basis = institution
+                                    institution = left_cell
+                                # 케이스 B: institution_col이 타입 조각, type_col이 꼬리 조각인 경우(예: '훈장증[석탑산' + '업훈장제...')
+                                elif _looks_like_award_type_token(institution) and type_and_basis:
+                                    type_and_basis = (institution + " " + type_and_basis).strip()
+                                    institution = left_cell
+                        except Exception:
+                            pass
+
                         # 테이블이 2열로만 잡히거나 병합/누락으로 type_col이 공란인 케이스 보강:
                         if not type_and_basis:
                             extras = []
@@ -1369,6 +1694,28 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                             typ_fill = typ_p
                             if not typ_fill:
                                 typ_fill = _infer_type_and_basis_from_text(d_raw, inst_p)
+                            # 깨진 셀 분리로 '한국수자원공' + '사 표창장...'처럼
+                            # 기관 접미어(예: '사')가 종류/근거로 유입되는 케이스를 복원한다.
+                            try:
+                                inst_p = str(inst_p or "").replace("\n", " ").strip()
+                                typ_fill = str(typ_fill or "").replace("\n", " ").strip()
+                                if inst_p and typ_fill:
+                                    # 유형: typ가 '사 ...'로 시작하고, inst+첫글자를 합친 형태가 페이지 텍스트에 존재
+                                    first = typ_fill[:1]
+                                    if first and first in {"사"} and not inst_p.endswith(first):
+                                        inst2 = inst_p + first
+                                        # page_text에서 실제 기관명이 그렇게 등장했는지 확인(오탐 방지)
+                                        if _compact(inst2) in _compact(page_text):
+                                            inst_p = inst2
+                                            typ_fill = typ_fill[1:].strip()
+                                    if typ_fill.startswith("사 "):
+                                        inst2 = inst_p + "사"
+                                        if _compact(inst2) in _compact(page_text):
+                                            inst_p = inst2
+                                            typ_fill = typ_fill[2:].strip()
+                            except Exception:
+                                pass
+                            typ_fill = _normalize_award_type_text(typ_fill)
                             if d_raw and re.match(r"\d{4}\.\d{2}\.\d{2}", d_raw):
                                 awards.append(
                                     {
@@ -1425,13 +1772,21 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                 typ = str(a.get("종류및근거") or "").replace("\n", " ").strip()
                 if not typ:
                     continue
-                if inst and typ.startswith(inst):
-                    typ2 = typ[len(inst) :].strip()
-                    # '기관명표창장...'처럼 공백이 없던 케이스도 방어
-                    if typ2.startswith(inst):
-                        typ2 = typ2[len(inst) :].strip()
-                    typ = typ2
+                if inst:
+                    # 1) 정상 케이스: '기관명 ...'이 그대로 붙은 경우
+                    if typ.startswith(inst):
+                        typ = typ[len(inst) :].strip()
+                    # 2) 공백이 사라진 케이스: '기관명표창장...'
+                    elif typ.replace(" ", "").startswith(inst.replace(" ", "")):
+                        # 원문에서 안전하게 자르기 어려우므로, 앞부분의 기관명(공백 제거)을 제거한 뒤 재공백화
+                        t2 = typ.replace(" ", "")
+                        t2 = t2[len(inst.replace(" ", "")) :].strip()
+                        typ = t2
+                    # 3) 기관명이 1글자 잘린 채로 붙는 케이스(예: 기관명 끝 글자가 다음 셀로 넘어가면서 typ가 '한국수자원공 표창패'가 됨)
+                    elif len(inst) >= 2 and typ.startswith(inst[:-1]):
+                        typ = typ[len(inst[:-1]) :].strip()
                 typ = re.sub(r"\s+", " ", typ).strip()
+                typ = _normalize_award_type_text(typ)
                 a["종류및근거"] = typ
         except Exception:
             pass
@@ -1558,9 +1913,17 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                 typ = str(a.get("종류및근거") or "").replace("\n", " ").strip()
                 if not typ:
                     continue
-                if inst and typ.startswith(inst):
-                    typ = typ[len(inst) :].strip()
+                if inst:
+                    if typ.startswith(inst):
+                        typ = typ[len(inst) :].strip()
+                    elif typ.replace(" ", "").startswith(inst.replace(" ", "")):
+                        t2 = typ.replace(" ", "")
+                        t2 = t2[len(inst.replace(" ", "")) :].strip()
+                        typ = t2
+                    elif len(inst) >= 2 and typ.startswith(inst[:-1]):
+                        typ = typ[len(inst[:-1]) :].strip()
                 typ = re.sub(r"\s+", " ", typ).strip()
+                typ = _normalize_award_type_text(typ)
                 a["종류및근거"] = typ
         except Exception:
             pass
@@ -1738,6 +2101,8 @@ def parse_workplace_info(page) -> List[Dict[str, Any]]:
                         ['교육훈련', '상훈', '벌점', '국가기술자격', '학력']
                     )
                     
+                    from parsers.utils.company_change_markers import get_company_change_markers
+
                     def _append_workplace(period_raw: str, company_raw: str):
                         """단일 (기간, 상호) 쌍을 표준 스키마로 추가"""
                         if not period_raw or not company_raw:
@@ -1759,22 +2124,20 @@ def parse_workplace_info(page) -> List[Dict[str, Any]]:
                             s = (s or "")
                             s = s.replace("：", ":")
                             s = re.sub(r"\s+", " ", s)
-                            s = re.sub(r"現\s*:\s*", "現:", s)
-                            s = re.sub(r"흡수합병\s*:\s*", "흡수합병:", s)
+                            for mk in get_company_change_markers():
+                                s = re.sub(rf"{re.escape(mk)}\s*:\s*", f"{mk}:", s)
                             return s.strip()
 
                         company_clean = _normalize_company_markers(company_raw.replace('\n', ' '))
                         prev_name = company_clean
                         curr_name = ""
-                        # '現:' 또는 '흡수합병:' 이후를 "현재 상호"로 취급
-                        if "現:" in company_clean:
-                            left, right = company_clean.split("現:", 1)
-                            prev_name = left.strip()
-                            curr_name = right.strip()
-                        elif "흡수합병:" in company_clean:
-                            left, right = company_clean.split("흡수합병:", 1)
-                            prev_name = (left or "").strip()
-                            curr_name = (right or "").strip()
+                        # 변경 사유 마커(現/흡수합병/분할설립/상호변경/법인전환/합병/양수도 등) 이후를 "현재 상호"로 취급
+                        for mk in [m + ":" for m in get_company_change_markers()]:
+                            if mk in company_clean:
+                                left, right = company_clean.split(mk, 1)
+                                prev_name = (left or "").strip()
+                                curr_name = (right or "").strip()
+                                break
                         else:
                             # pdfplumber가 '現' 문자를 드롭한 경우: "구상호 :신상호" 패턴 감지
                             # 예: "(주)창설토목건축사사무소 :(주)창설", "한일개발(주) :한진건설(주)"
@@ -1788,6 +2151,31 @@ def parse_workplace_info(page) -> List[Dict[str, Any]]:
                                 ):
                                     prev_name = left
                                     curr_name = right.strip()
+
+                        # 추가 규칙: "YYYY.MM.DD :(주)..." 형태의 상호변경 표기 분리
+                        def _split_date_colon(blob: str) -> tuple[str, str] | None:
+                            m = re.search(r"\b(\d{4}\.\d{2}\.\d{2})\s*[:：]\s*(.+)$", blob or "")
+                            if not m:
+                                return None
+                            right = (m.group(2) or "").strip()
+                            left = ((blob[: m.start()] or "")).strip()
+                            left = re.sub(r"\b\d{4}\.\d{2}\.\d{2}\b", " ", left)
+                            left = re.sub(r"\s+", " ", left).strip()
+                            if left and right and re.search(r"[가-힣A-Za-z0-9]", right):
+                                return left, right
+                            return None
+
+                        if prev_name and (not curr_name):
+                            split = _split_date_colon(prev_name)
+                            if split:
+                                prev_name, curr_name = split
+                        elif curr_name:
+                            split = _split_date_colon(curr_name)
+                            if split:
+                                left, right = split
+                                if not prev_name:
+                                    prev_name = left
+                                curr_name = right
                         # 규칙: 현재 상호명이 비어 있으면, 현재에 넣고 이전은 빈 값
                         if prev_name and not curr_name:
                             curr_name = prev_name
@@ -1815,21 +2203,25 @@ def parse_workplace_info(page) -> List[Dict[str, Any]]:
                         if '해당없음' in row_text and len(row_text.strip()) < 20:
                             continue
 
-                        # 흡수합병·종료일·現(:) 한 줄 형식 (표 셀 병합으로 오른쪽 상호 누락 시)
-                        if "흡수합병" in row_text:
-                            merger_flat = re.sub(r"\s+", " ", row_text.replace("\n", " ")).strip()
+                        # 변경 사유·종료일·(:) 한 줄 형식 (표 셀 병합으로 오른쪽 상호 누락 시)
+                        if any(k in row_text for k in get_company_change_markers() if k not in {"現", "현"}):
+                            flat1 = re.sub(r"\s+", " ", row_text.replace("\n", " ")).strip()
+                            reasons = [m for m in get_company_change_markers() if m not in {"現", "현"}]
+                            reason_alt = "|".join(re.escape(x) for x in reasons) if reasons else "흡수합병"
                             mm = re.search(
-                                r"(\d{4}\.\d{2}\.\d{2})\s+흡수합병:\s*(.+?)\s+"
-                                r"(\d{4}\.\d{2}\.\d{2})\s*:\s*(.+)$",
-                                merger_flat,
+                                rf"(\d{{4}}\.\d{{2}}\.\d{{2}})\s+({reason_alt}):\s*(.+?)\s+"
+                                rf"(\d{{4}}\.\d{{2}}\.\d{{2}})\s*:\s*(.+)$",
+                                flat1,
                             )
                             if mm:
-                                workplaces.append({
-                                    "근무기간_시작": convert_date_format(mm.group(1)),
-                                    "근무기간_종료": convert_date_format(mm.group(3)),
-                                    "이전_상호명": mm.group(2).strip(),
-                                    "현재_상호명": mm.group(4).strip(),
-                                })
+                                workplaces.append(
+                                    {
+                                        "근무기간_시작": convert_date_format(mm.group(1)),
+                                        "근무기간_종료": convert_date_format(mm.group(4)),
+                                        "이전_상호명": mm.group(3).strip(),
+                                        "현재_상호명": mm.group(5).strip(),
+                                    }
+                                )
 
                         # 1) 컬럼/페어 기반 파싱 (가능하면 가장 정확)
                         for period_col, company_col in col_pairs:

@@ -142,7 +142,6 @@ def parse_page_2(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]]:
         # 5) 후처리 — 원본 parse_page_2 의 표 경로(3925~3933줄)와 완전 동일한 순서
         if _table_only_postprocess_enabled():
             _sanitize_header_like_project_names(table_rows, page_num_1based=page_num_1based)
-            _sanitize_overview_like_project_names(table_rows, page_num_1based=page_num_1based)
             _fix_shifted_fields_in_tech_career_rows(table_rows)
             _cleanup_tech_career_job_noise_rows(table_rows)
         else:

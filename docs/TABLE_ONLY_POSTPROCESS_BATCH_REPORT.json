@@ -1,0 +1,1192 @@
+{
+  "folder": "D:\\경력증명서\\대기자 경력증명서",
+  "n_pdfs": 32,
+  "n_equal_full": 26,
+  "n_diff_full": 6,
+  "results": [
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\곽진순 경력증명서(2025.11.05).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 46,
+        "n_off": 46,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 4,
+        "n_off": 4,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김동운 경력증명서(2025.06.20).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 26,
+        "n_off": 26,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 1,
+        "n_off": 1,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김린 경력증명서(2025.08.27).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 10,
+        "n_off": 10,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 2,
+        "n_off": 2,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김병수 경력증명서(2025.10.21).pdf",
+      "equal_full": false,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": false,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 28,
+        "n_off": 28,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 5,
+        "n_off": 5,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김영호 경력증명서(2025.11.05).pdf",
+      "equal_full": false,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": false,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 31,
+        "n_off": 31,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 0,
+        "n_off": 0,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김용준 경력증명서(2025.08.13).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 55,
+        "n_off": 55,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 56,
+        "n_off": 56,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김원술 경력증명서(2025.09.16).pdf",
+      "equal_full": false,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": false,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 24,
+        "n_off": 24,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 11,
+        "n_off": 11,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김원조 경력증명서(2025.09.04).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 5,
+        "n_off": 5,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 9,
+        "n_off": 9,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\김태균 경력증명서(2025.11.05).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 23,
+        "n_off": 23,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 13,
+        "n_off": 13,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\민순기 경력증명서(2025.09.22).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 181,
+        "n_off": 181,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 1,
+        "n_off": 1,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\박시범 경력증명서(2025.11.05).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 41,
+        "n_off": 41,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 15,
+        "n_off": 15,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\박진식 경력증명서(2025.05.23).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 29,
+        "n_off": 29,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 1,
+        "n_off": 1,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\박찬종 경력증명서(2025.09.22).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 16,
+        "n_off": 16,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 1,
+        "n_off": 1,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\박현민 경력증명서(2025.10.16).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 34,
+        "n_off": 34,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 11,
+        "n_off": 11,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\박현철 경력증명서(2025.10.21).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 21,
+        "n_off": 21,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 9,
+        "n_off": 9,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\봉성국 경력증명서(2025.09.09).pdf",
+      "equal_full": false,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": false,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 203,
+        "n_off": 203,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 17,
+        "n_off": 17,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\서정화 경력증명서(2025.11.05).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 11,
+        "n_off": 11,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 11,
+        "n_off": 11,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\안병규 경력증명서(2025.09.08).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 13,
+        "n_off": 13,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 9,
+        "n_off": 9,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\오준근 경력증명서(2024.08.09.).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 87,
+        "n_off": 87,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 7,
+        "n_off": 7,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\우성예 경력증명서(2025.10.14).pdf",
+      "equal_full": false,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": false,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 54,
+        "n_off": 54,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 19,
+        "n_off": 19,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\유길영 경력증명서(2025.11.05).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 18,
+        "n_off": 18,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 11,
+        "n_off": 11,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\이영관 경력증명서(2025.10.01).pdf",
+      "equal_full": false,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": false,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 30,
+        "n_off": 30,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 11,
+        "n_off": 11,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\이은영 경력증명서(2025.10.27).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 11,
+        "n_off": 11,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 4,
+        "n_off": 4,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\이재하 경력증명서(2025.11.05).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 6,
+        "n_off": 6,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 9,
+        "n_off": 9,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\이지성 경력증명서(2025.09.22).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 32,
+        "n_off": 32,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 2,
+        "n_off": 2,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\조성택 경력증명서(2025.11.04).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 48,
+        "n_off": 48,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 1,
+        "n_off": 1,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\최남규 경력증명서(2023.08.22.).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 26,
+        "n_off": 26,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 8,
+        "n_off": 8,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\최용재 경력증명서(2025.10.21).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 19,
+        "n_off": 19,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 8,
+        "n_off": 8,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\탁도선 경력증명서(2025.10.21).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 21,
+        "n_off": 21,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 0,
+        "n_off": 0,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\하두근 경력증명서(2025.05.28).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 15,
+        "n_off": 15,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 3,
+        "n_off": 3,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\홍석성 경력증명서(2025.06.26).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 30,
+        "n_off": 30,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 1,
+        "n_off": 1,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    },
+    {
+      "pdf": "D:\\경력증명서\\대기자 경력증명서\\홍성달 경력증명서(2025.11.05).pdf",
+      "equal_full": true,
+      "section_equal": {
+        "인적사항": true,
+        "등급": true,
+        "국가기술자격": true,
+        "학력": true,
+        "교육훈련": true,
+        "상훈": true,
+        "근무처": true,
+        "기술경력": true,
+        "건설사업관리및감리경력": true,
+        "업무수행기간": true,
+        "용역완성비율": true,
+        "공사종류별인정일수": true,
+        "직무전문분야별인정일수": true,
+        "_검증": true,
+        "_파싱오류": true
+      },
+      "tech_diff": {
+        "label": "기술경력",
+        "n_on": 84,
+        "n_off": 84,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      },
+      "cm_diff": {
+        "label": "건설사업관리및감리경력",
+        "n_on": 4,
+        "n_off": 4,
+        "n_row_key_diff": 0,
+        "field_diffs": {},
+        "examples": []
+      }
+    }
+  ]
+}

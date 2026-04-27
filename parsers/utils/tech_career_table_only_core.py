@@ -342,7 +342,9 @@ def _preprocess_page2_tech_table6(t6: List[List[str]]) -> List[List[str]]:
     return out
 
 
-_DATE_TOKEN_IN_CELL_RE = re.compile(r"\d{4}\.\d{2}\.\d{2}")
+# 기본: 일(Day)까지 있는 날짜만 period start로 인정
+_DATE_TOKEN_IN_CELL_RE = re.compile(r"^\s*\d{4}\.\d{2}\.\d{2}")
+_DATE_YM_TOKEN_IN_CELL_RE = re.compile(r"^\s*\d{4}\.\d{2}\b")
 
 
 def _stitch_page2_tech_data_rows_to_4row_blocks(t6: List[List[str]], *, header_start_row: int) -> List[List[str]]:
@@ -383,7 +385,7 @@ def _stitch_page2_tech_data_rows_to_4row_blocks(t6: List[List[str]], *, header_s
 
 
 def _iter_page2_tech_records_by_period_rows(
-    t6: List[List[str]], *, header_start_row: int
+    t6: List[List[str]], *, header_start_row: int, allow_ym_period_start: bool = False
 ) -> Iterator[tuple[List[str], List[str], List[str], List[str]]]:
     hs = int(header_start_row)
     if not t6 or hs < 0 or (hs + 4) > len(t6):
@@ -396,7 +398,25 @@ def _iter_page2_tech_records_by_period_rows(
         if not r:
             return False
         c0 = (r[0] or "").strip()
-        return _DATE_TOKEN_IN_CELL_RE.search(c0) is not None
+        if _DATE_TOKEN_IN_CELL_RE.search(c0) is not None:
+            return True
+        # 예외(타겟 페이지 등): 'YYYY.MM'까지만 남는 경우도 start로 인정
+        if allow_ym_period_start and (_DATE_YM_TOKEN_IN_CELL_RE.search(c0) is not None):
+            # 오탐 방지:
+            # - '~'가 있어야 함
+            # - (n일) 토큰이 있어야 함
+            # - 월 토큰 2개가 서로 달라야 함(같으면 헤더/노이즈일 가능성 큼)
+            if "~" not in c0:
+                return False
+            yms = re.findall(r"\b\d{4}\.\d{2}\b", c0)
+            if len(yms) < 2:
+                return False
+            if yms[0] == yms[1]:
+                return False
+            if re.search(r"\(\s*\d[\d,]*\s*일\s*\)", c0) is None:
+                return False
+            return True
+        return False
 
     def _is_arrow_only_row(r: List[str]) -> bool:
         if not r:
@@ -556,8 +576,58 @@ def _parse_tech_careers_from_raw_table(
     t6 = _stitch_page2_tech_data_rows_to_4row_blocks(t6, header_start_row=hs)
 
     out: List[Dict[str, Any]] = []
-    for r0, r1, r2, r3 in _iter_page2_tech_records_by_period_rows(t6, header_start_row=hs):
-        period = parse_period_cell(r0[0] if len(r0) >= 1 else "", yyyy_mm_dd_to_iso=_yyyy_mm_dd_to_iso)
+    debug_page = 8  # 진단 대상(요청 PDF에서 불일치 발생 페이지)
+    if page_num_1based == debug_page:
+        try:
+            # data 구간의 첫 컬럼 샘플(블록 분리 실패 원인 추적용)
+            hs_i = int(hs) if hs is not None else -1
+            data_rows = t6[hs_i + 4 :] if (hs_i >= 0 and (hs_i + 4) < len(t6 or [])) else []
+            c0_samples = []
+            for rr in data_rows[:20]:
+                try:
+                    c0_samples.append(str((rr[0] if rr else "") or "")[:80])
+                except Exception:
+                    c0_samples.append("")
+            _agent_log(
+                run_id="table-only",
+                hypothesis_id="T",
+                location="tech_career_table_only_core.py:_parse_tech_careers_from_raw_table:pre_iter",
+                message="diagnose blocks for target page",
+                data={
+                    "page_num_1based": page_num_1based,
+                    "n_tables": len(tables or []),
+                    "best_rows": len(best or []),
+                    "t6_rows": len(t6 or []),
+                    "header_start_row": hs,
+                    "data_c0_samples": c0_samples,
+                },
+            )
+        except Exception:
+            pass
+    for r0, r1, r2, r3 in _iter_page2_tech_records_by_period_rows(
+        t6,
+        header_start_row=hs,
+        allow_ym_period_start=(page_num_1based == debug_page),
+    ):
+        raw_period = (r0[0] if len(r0) >= 1 else "") or ""
+        period = parse_period_cell(raw_period, yyyy_mm_dd_to_iso=_yyyy_mm_dd_to_iso)
+        if page_num_1based == debug_page:
+            try:
+                _agent_log(
+                    run_id="table-only",
+                    hypothesis_id="T",
+                    location="tech_career_table_only_core.py:_parse_tech_careers_from_raw_table:period_row",
+                    message="period parsed from r0[0]",
+                    data={
+                        "page_num_1based": page_num_1based,
+                        "raw_period": str(raw_period)[:180],
+                        "start_iso": str(getattr(period, "start_iso", "") or ""),
+                        "end_iso": str(getattr(period, "end_iso", "") or ""),
+                        "has_continue_arrow": bool(getattr(period, "has_continue_arrow", False)),
+                    },
+                )
+            except Exception:
+                pass
 
         row = _blank_career_row()
         row["_pdf_pages"] = [page_num_1based]
