@@ -1099,11 +1099,11 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
         Dict: 추출된 데이터
     """
     result = {
-        '관리번호': '',
         '인적사항': {
             '성명': '',
             '생년월일': '',
-            '주소': ''
+            '주소': '',
+            '관리번호': ''
         },
         '서류출력일자': '',
         '등급': {
@@ -1130,15 +1130,17 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
         text_normalized = re.sub(r'\s+', ' ', combined_text)
 
         # 관리번호 파싱 (보통 1페이지 상단 좌측)
-        # 패턴: "관리번호" 키워드 뒤에 숫자, 또는 #숫자
-        mgmt_num_match = re.search(r'관리번호\s*(?:[:：\s]*)(?:#?\s*)(\d+)', text_normalized)
+        # 패턴: "관리번호" 키워드 뒤에 숫자, 또는 #숫자 (숫자 사이 공백 허용)
+        mgmt_num_match = re.search(r'관리번호\s*(?:[:：\s]*)(#\s*(?:\d\s*)+|\d+)', text_normalized)
         if mgmt_num_match:
-            result['관리번호'] = mgmt_num_match.group(1).strip()
+            # 공백 제외 요청에 따라 모든 공백 제거
+            result['인적사항']['관리번호'] = mgmt_num_match.group(1).replace(" ", "")
         else:
             # 관리번호가 단독으로 #숫자 형태로 존재하는 경우도 대비 (보통 페이지 최상단)
-            mgmt_num_match_alt = re.search(r'#\s*(\d+)', text_normalized[:500])
+            # 숫자가 띄어쓰기 되어 추출되는 경우를 위해 (#\s*(?:\d\s*)+) 패턴 사용
+            mgmt_num_match_alt = re.search(r'(#\s*(?:\d\s*)+)', text_normalized[:500])
             if mgmt_num_match_alt:
-                result['관리번호'] = mgmt_num_match_alt.group(1).strip()
+                result['인적사항']['관리번호'] = mgmt_num_match_alt.group(1).replace(" ", "")
         
         # 인적사항 파싱 (항목 키는 항상 유지)
         name_kor_match = re.search(r'성명\(한글\)\s+(\S+)', text_normalized)
@@ -1680,11 +1682,11 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
         Dict: 추출된 데이터
     """
     result = {
-        '관리번호': '',
         '인적사항': {
             '성명': '',
             '생년월일': '',
-            '주소': ''
+            '주소': '',
+            '관리번호': ''
         },
         '서류출력일자': '',
         '등급': {
