@@ -5,3 +5,6 @@ streamlit-image-coordinates
 PyMuPDF
 pandas
 openpyxl>=3.1.0
+fastapi
+uvicorn[standard]
+python-multipart

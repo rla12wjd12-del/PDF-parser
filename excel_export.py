@@ -348,3 +348,42 @@ def export_dict_to_excel_workbook(data: dict[str, Any], output_path: Path) -> Pa
 
     wb.save(output_path)
     return output_path.resolve()
+
+
+def export_dict_to_excel_bytes(data: dict[str, Any]) -> bytes:
+    """
+    export_dict_to_excel_workbook()과 동일한 규칙으로 워크북을 만들되,
+    파일로 저장하지 않고 메모리 bytes로 반환합니다(HTTP 응답용).
+    """
+    from io import BytesIO
+
+    wb = Workbook()
+    used_titles: set[str] = set()
+    first = True
+
+    ERROR_KEY = "_파싱오류"
+    for key, value in data.items():
+        if key == ERROR_KEY:
+            continue
+        title = _safe_sheet_title(key, used_titles)
+        if first:
+            ws = wb.active
+            ws.title = title
+            first = False
+        else:
+            ws = wb.create_sheet(title=title)
+        _fill_sheet(ws, str(key), value)
+
+    # '_파싱오류' 시트: 항상 마지막에 추가
+    error_data = data.get(ERROR_KEY, [])
+    err_title = _safe_sheet_title("파싱오류", used_titles)
+    if first:
+        ws_err = wb.active
+        ws_err.title = err_title
+    else:
+        ws_err = wb.create_sheet(title=err_title)
+    _write_error_sheet(ws_err, error_data if isinstance(error_data, list) else [])
+
+    bio = BytesIO()
+    wb.save(bio)
+    return bio.getvalue()
