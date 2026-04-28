@@ -34,6 +34,11 @@ _NUM_ONLY_RE = re.compile(r"^\s*[\d,]+\s*$")
 _NUM_WITH_IL_RE = re.compile(r"^\s*[\d,]+\s*일\s*$")
 _IL_ONLY_RE = re.compile(r"^\s*일\s*$")
 
+# 좌측 컬럼의 인정일수가 라벨 없이 줄 시작에 등장하는 패턴.
+# (좌측 라벨이 길어 위/아래 줄로 분리되고, 인정일수만 가운데 줄에 남는 경우 발생)
+# 예) "7 일 토목/(미기재) 7,153 일"
+_ORPHAN_LEFT_DAYS_RE = re.compile(r"^\s*\d+(?:,\d+)*\s*일\b")
+
 
 def _is_footer_like_line(ln: str) -> bool:
     s = (ln or "").strip()
@@ -97,7 +102,148 @@ def _normalize_and_stitch_lines(text: str) -> list[str]:
         out.append(cur)
         i += 1
 
-    return out
+    # 좌측 컬럼 라벨이 길어서 PDF 렌더링 시 2~3줄에 걸쳐 분리되는 경우를 보정한다.
+    # (요약 섹션 범위 안에서만 적용해 다른 섹션에 영향이 가지 않도록 한다.)
+    return _stitch_wrapped_left_labels_in_section(out)
+
+
+def _is_summary_label_only_line(ln: str) -> bool:
+    """
+    요약 섹션 내에서 '라벨만 있는 줄'(인정일수가 없는 줄) 여부를 판정한다.
+    - 헤더/푸터/앵커/숫자(만)/'일'(만) 줄은 제외.
+    """
+    s = (ln or "").strip()
+    if not s:
+        return False
+    if _DAYS_ENTRY_RE.search(s):
+        return False
+    if _SUMMARY_END_ANCHOR_RE.search(s):
+        return False
+    if _SUMMARY_LEFT_HEADER_RE.search(s):
+        return False
+    if _SUMMARY_RIGHT_HEADER_RE.search(s):
+        return False
+    if _is_footer_like_line(s):
+        return False
+    if _NUM_ONLY_RE.match(s) or _NUM_WITH_IL_RE.match(s) or _IL_ONLY_RE.match(s):
+        return False
+    if s.startswith("2."):
+        return False
+    return True
+
+
+def _has_unbalanced_open_paren(s: str) -> bool:
+    """
+    문자열에 닫히지 않은 '(' 가 있는지 확인한다.
+    - 한국어 PDF의 공사종류 라벨은 일반적으로 괄호가 균형있게 짝지어진다.
+    - 라벨이 줄바꿈된 경우, 위쪽에는 '(' 만, 아래쪽에 ')' 만 분리되어 등장할 수 있다.
+    """
+    s = s or ""
+    opens = s.count("(") + s.count("（")
+    closes = s.count(")") + s.count("）")
+    return opens > closes
+
+
+def _stitch_wrapped_left_labels_in_section(lines: list[str]) -> list[str]:
+    """
+    공사종류별 인정일수 섹션 내에서, 좌측 라벨이 길어 줄바꿈된 패턴을 감지해 합친다.
+
+    PDF 추출 패턴은 텍스트 추출기의 라인 분리 동작에 따라 두 가지로 나타난다.
+
+    [CASE A] 좌측 인정일수가 가운데 줄에만 남는 경우 (orphan-days)
+        관광휴게시설(공원.유원지.관광지부          <- 좌측 라벨 상단 (라벨만)
+        7 일 토목/(미기재) 7,153 일                <- 좌측 인정일수 + 우측 항목 (라벨 없이 시작)
+        수시 설)                                   <- 좌측 라벨 하단 (라벨만)
+
+    [CASE B] 좌측 라벨 상단과 인정일수가 같은 줄로 합쳐졌고 하단만 분리된 경우
+        관광휴게시설(공원.유원지.관광지부 161 일   <- 상단 라벨 + 인정일수 (괄호 미닫힘)
+        수시 설)                                   <- 하단 라벨 (라벨만)
+
+    합친 결과)
+        관광휴게시설(공원.유원지.관광지부수시설) 7 일 토목/(미기재) 7,153 일
+        관광휴게시설(공원.유원지.관광지부수시설) 161 일
+
+    한국어 라벨은 줄바꿈 시 의도된 공백이 거의 발생하지 않는다(이 도메인의 공사종류
+    값은 모두 공백 없는 형태). PDF 폰트 렌더링 시 인접 글자 사이 미세한 간격을
+    pdfplumber가 단어 경계로 해석해 "수시 설)"처럼 잘못된 공백이 끼어드는 경우가
+    있어, 합칠 때 각 라벨 조각의 내부 공백도 함께 제거한다.
+    """
+    if not lines:
+        return lines
+
+    # 섹션 범위 탐지: 좌측 헤더가 등장하면 시작, 종료 앵커("2. 건설기술진흥법령 외")가
+    # 등장하거나 줄이 "2."로 시작하면 종료한다. 헤더가 없으면 처리하지 않는다.
+    start_idx = -1
+    end_idx = len(lines)
+    for i, ln in enumerate(lines):
+        if start_idx < 0 and _SUMMARY_LEFT_HEADER_RE.search(ln):
+            start_idx = i
+            continue
+        if start_idx >= 0:
+            if _SUMMARY_END_ANCHOR_RE.search(ln) or ln.startswith("2."):
+                end_idx = i
+                break
+
+    if start_idx < 0:
+        return lines
+
+    head = list(lines[:start_idx])
+    section = list(lines[start_idx:end_idx])
+    tail = list(lines[end_idx:])
+
+    new_section: list[str] = []
+    i = 0
+    while i < len(section):
+        cur = section[i]
+
+        # CASE A: 줄이 좌측 인정일수만으로 시작 → 상/하 라벨-only 줄을 합친다.
+        if _ORPHAN_LEFT_DAYS_RE.match(cur):
+            above_labels: list[str] = []
+            while new_section and _is_summary_label_only_line(new_section[-1]):
+                above_labels.insert(0, new_section.pop())
+            below_labels: list[str] = []
+            j = i + 1
+            while j < len(section) and _is_summary_label_only_line(section[j]):
+                below_labels.append(section[j])
+                j += 1
+
+            if above_labels or below_labels:
+                merged_chunks = above_labels + below_labels
+                merged_label = "".join(re.sub(r"\s+", "", c) for c in merged_chunks)
+                stitched = (merged_label + " " + cur).strip() if merged_label else cur
+                new_section.append(stitched)
+                i = j
+                continue
+
+        # CASE B: 첫 인정일수 매칭의 라벨에 닫히지 않은 '('가 있고, 다음 줄이 라벨-only인 경우
+        #         → 다음 줄(들)을 라벨 하단으로 흡수해 라벨을 보강한다.
+        m = _DAYS_ENTRY_RE.search(cur)
+        if m:
+            label_part = (m.group(1) or "").strip()
+            if _has_unbalanced_open_paren(label_part):
+                below_labels: list[str] = []
+                j = i + 1
+                # 괄호가 균형을 이룰 때까지(또는 라벨-only 줄이 끝날 때까지) 흡수한다.
+                while j < len(section) and _is_summary_label_only_line(section[j]):
+                    below_labels.append(section[j])
+                    extra_so_far = "".join(re.sub(r"\s+", "", c) for c in below_labels)
+                    j += 1
+                    if not _has_unbalanced_open_paren(label_part + extra_so_far):
+                        break
+
+                if below_labels:
+                    extra = "".join(re.sub(r"\s+", "", c) for c in below_labels)
+                    new_label = label_part + extra
+                    # cur 의 라벨 부분만 교체. m.end(1) 이후(공백 + 인정일수 ...)는 그대로 유지.
+                    new_cur = new_label + cur[m.end(1):]
+                    new_section.append(new_cur)
+                    i = j
+                    continue
+
+        new_section.append(cur)
+        i += 1
+
+    return head + new_section + tail
 
 
 def _parse_summary_text(text: str) -> Dict[str, List[Dict[str, Any]]]:

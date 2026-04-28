@@ -372,26 +372,50 @@ def _parse_training_row(row_text: str) -> dict | None:
     }
 
 def _workplace_body_lines_from_text(raw: str) -> list[str]:
-    """'근무기간'+'상호' 헤더 다음 ~ '근무처' 또는 각주 전까지 본문 줄."""
+    """근무처 섹션의 모든 페이지 본문 라인을 모은다.
+
+    배경: 건설기술인 경력증명서는 근무처 섹션이 2페이지 이상으로 넘어갈 수 있고,
+    각 페이지 상단에 다음 형태가 반복된다.
+
+        근무처
+        근무기간   상호   근무기간   상호    <- 컬럼 헤더
+        ... 데이터 행 ...
+        본 증명서는 인터넷으로 ...           <- 페이지 푸터(2줄)
+        문서하단의 바코드로 ...
+
+    그리고 다음 페이지 상단에는 인적사항/등급/교육훈련 등의 헤더가 다시 등장한 뒤,
+    '근무기간/상호' 컬럼 헤더가 다시 나오고 그 아래에 추가 데이터 행이 이어진다.
+
+    구현:
+    - "in_block" 플래그를 사용해, '근무기간'+'상호' 라인을 만나면 블록 진입(헤더는 스킵).
+    - 블록 안에서 데이터 라인을 본문에 누적.
+    - '본 증명서는...' 또는 'kocea.or.kr' 라인을 만나면 블록 종료(다음 페이지 헤더까지 무시).
+    - 단독 '근무처' 라벨/페이지 헤더 잡음(인적사항·등급 등)은 in_block=False 상태이므로 자연 스킵.
+    - 진짜 종료 앵커는 '1. 기술경력' 한 가지뿐.
+    """
     lines = [(ln or "").strip() for ln in (raw or "").splitlines()]
-    start_i = None
-    for i, ln in enumerate(lines):
-        if "근무기간" in ln and "상호" in ln:
-            start_i = i + 1
-            break
-    if start_i is None:
-        return []
     body: list[str] = []
-    for j in range(start_i, len(lines)):
-        ln = lines[j]
-        if not ln:
-            continue
-        if ln.strip() == "근무처":
-            break
+    in_block = False
+
+    for ln in lines:
         if "1. 기술경력" in ln:
             break
-        if "본 증명서는" in ln and body:
-            break
+        if not ln:
+            continue
+        # 페이지마다 등장하는 컬럼 헤더 → 블록 진입
+        if ("근무기간" in ln) and ("상호" in ln):
+            in_block = True
+            continue
+        if not in_block:
+            continue
+        # 페이지 푸터에서 블록 종료(다음 페이지 헤더까지 본문 수집 일시 중단)
+        if ln.startswith("본 증명서는") or ("kocea.or.kr" in ln):
+            in_block = False
+            continue
+        # 페이지 상단에서 '근무처' 섹션 라벨이 단독 라인으로 다시 들어오는 케이스 보강.
+        # (블록 진입 직전·직후에 끼는 잡음)
+        if ln.strip() == "근무처":
+            continue
         body.append(re.sub(r"\s+", " ", ln).strip())
     return body
 
@@ -1131,14 +1155,22 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
 
         # 관리번호 파싱 (보통 1페이지 상단 좌측)
         # 패턴: "관리번호" 키워드 뒤에 숫자, 또는 #숫자 (숫자 사이 공백 허용)
-        mgmt_num_match = re.search(r'관리번호\s*(?:[:：\s]*)(#\s*(?:\d\s*)+|\d+)', text_normalized)
+        # - #이 붙은 경우: "# 4 1 0 0 0 4 4 8" → "#41000448"
+        # - #이 없는 경우: "4 1 0 0 0 4 4 8" → "41000448"
+        #   (PDF 추출기가 자릿수 사이를 공백으로 분리해 내보내는 케이스 대응)
+        mgmt_num_match = re.search(
+            r'관리번호\s*(?:[:：\s]*)(#\s*(?:\d\s*)+|\d(?:\s*\d)*)',
+            text_normalized,
+        )
         if mgmt_num_match:
             # 공백 제외 요청에 따라 모든 공백 제거
             result['인적사항']['관리번호'] = mgmt_num_match.group(1).replace(" ", "")
         else:
-            # 관리번호가 단독으로 #숫자 형태로 존재하는 경우도 대비 (보통 페이지 최상단)
-            # 숫자가 띄어쓰기 되어 추출되는 경우를 위해 (#\s*(?:\d\s*)+) 패턴 사용
-            mgmt_num_match_alt = re.search(r'(#\s*(?:\d\s*)+)', text_normalized[:500])
+            # 관리번호 키워드가 매칭되지 않은 경우의 백업: 페이지 최상단에서
+            # #숫자 또는 공백 분리된 숫자 블록을 찾는다.
+            mgmt_num_match_alt = re.search(
+                r'(#\s*(?:\d\s*)+)', text_normalized[:500]
+            )
             if mgmt_num_match_alt:
                 result['인적사항']['관리번호'] = mgmt_num_match_alt.group(1).replace(" ", "")
         
