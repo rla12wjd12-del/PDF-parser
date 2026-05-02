@@ -5,11 +5,18 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
 
-import openpyxl
 import json
+import re
+
+import openpyxl
 
 
 _GRADE_TOKENS = ("특급", "고급", "중급", "초급")
+
+
+def _compact_ws(s: str) -> str:
+    """공백 제거(카탈로그 '항만 및 해안' vs PDF '항만및해안' 등 정규화 비교용)."""
+    return re.sub(r"\s+", "", s or "")
 
 
 def _norm(s: str) -> str:
@@ -224,6 +231,15 @@ def best_match_specialty(text: str, catalog: Optional[FieldCatalog] = None) -> s
     candidates = sorted((_norm(s) for s in catalog.all_specialties), key=len, reverse=True)
     for c in candidates:
         if c and c in t:
+            return c
+    # [수정] 공백 유무·띄어쓰기 편차로 `in` 매칭이 실패하는 전문분야명(예: 항만및해안 ↔ 항만 및 해안)
+    t_comp = _compact_ws(t)
+    if not t_comp:
+        return ""
+    for c in candidates:
+        if not c:
+            continue
+        if _compact_ws(c) and _compact_ws(c) in t_comp:
             return c
     return ""
 

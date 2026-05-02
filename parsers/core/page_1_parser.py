@@ -1075,14 +1075,16 @@ def _parse_workplace_body_lines_single(body_lines: list[str]) -> list[dict]:
 # 학력: 한 줄에 "졸업일 학교 … 학위[상태]"가 오고, 다음 줄이 "학력 YYYY.MM.DD …"처럼
 # 섹션 라벨이 날짜 앞에 붙는 양식이 있다. 라벨이 있으면 새 레코드 시작으로 인식해야 하며,
 # 이미 한 줄로 병합된 문자열은 날짜+학위 패턴으로 분리한다.
-_EDU_DEG_BRACKET = re.compile(r"(학사|석사|박사과정|박사수료|박사|없음)\[([^\]]+)\]")
+# // [수정] 한국건설엔지니어링협회 경력증명서 등: 학사·석사 외 '대졸[졸업]', '전문[졸업]' 등 학력구분+[상태] 표기를 동일하게 허용한다.
+_EDU_KIND = r"(?:학사|석사|박사과정|박사수료|박사|없음|대졸|전문졸업|전문|고졸|중졸|초졸|석·박|본\s*석사|본석사)"
+_EDU_BRACKET_FULL = re.compile(rf"(?P<deg>{_EDU_KIND})\[\s*(?P<st>[^\]]+)\s*\]")
 _EDU_ONE_LINE = re.compile(
-    r"^(?:학력\s+)?(?P<date>\d{4}\.\d{2}\.\d{2})\s+"
-    r"(?P<body>.+?(?:학사|석사|박사과정|박사수료|박사|없음)\[[^\]]+\])\s*$"
+    rf"^(?:학력\s+)?(?P<date>\d{{4}}\.\d{{2}}\.\d{{2}})\s+"
+    rf"(?P<body>.+{_EDU_KIND}\[[^\]]+\])\s*$",
 )
 _EDU_SEG_FIND = re.compile(
-    r"(?:^|\s)(?:학력\s+)?(?P<date>\d{4}\.\d{2}\.\d{2})\s+"
-    r"(?P<rest>.+?(?:학사|석사|박사과정|박사수료|박사|없음)\[[^\]]+\])"
+    rf"(?:^|\s)(?:학력\s+)?(?P<date>\d{{4}}\.\d{{2}}\.\d{{2}})\s+"
+    rf"(?P<rest>.+?{_EDU_KIND}\[[^\]]+\])",
 )
 
 
@@ -1273,7 +1275,8 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
 
                 def _pick_job_and_grade(block: str) -> tuple[str, str]:
                     for jf in catalog.job_fields:
-                        m = re.search(rf"{re.escape(jf)}\\s*{grade_tokens_pat}", block or "")
+                        # [수정] rf"...\\s*..." 는 실제 정규식이 `\\\\s*` 가 되어 공백을 매칭하지 못함
+                        m = re.search(rf"{re.escape(jf)}\s*{grade_tokens_pat}", block or "")
                         if m:
                             return jf, m.group(1)
                     return "", ""
@@ -1283,12 +1286,12 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
                     for sp in sorted(catalog.all_specialties, key=len, reverse=True):
                         if not sp:
                             continue
-                        m = re.search(rf"{re.escape(sp)}\\s*{grade_tokens_pat}", block or "")
+                        m = re.search(rf"{re.escape(sp)}\s*{grade_tokens_pat}", block or "")
                         if m:
                             return sp, m.group(1)
                     sp2 = best_match_specialty(block or "", catalog)
                     if sp2:
-                        m2 = re.search(rf"{re.escape(sp2)}\\s*{grade_tokens_pat}", block or "")
+                        m2 = re.search(rf"{re.escape(sp2)}\s*{grade_tokens_pat}", block or "")
                         if m2:
                             return sp2, m2.group(1)
                     return "", ""
@@ -1312,7 +1315,7 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
                     result["등급"]["건설사업관리_전문분야_등급"] = sg
 
                 # 품질관리 등급(등급 토큰만 있어도 채움)
-                m_q = re.search(rf"품질관리\\s*{grade_tokens_pat}", text_normalized)
+                m_q = re.search(rf"품질관리\s*{grade_tokens_pat}", text_normalized)
                 if m_q:
                     result["등급"]["품질관리_등급"] = m_q.group(1)
         except Exception:
@@ -1366,9 +1369,10 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
         # 형태이며, 학과/전공의 괄호가 다음 줄로 떨어질 수 있다(예: '전공)' 단독 라인).
         edu_rows: list[dict] = []
 
+        # // [수정] edu_start_pat: 대졸[졸업] 등 _EDU_KIND와 동일한 꼬리 조건 사용
         edu_start_pat = re.compile(
-            r"^(?:학력\s+)?(?P<date>\d{4}\.\d{2}\.\d{2})\s+"
-            r"(?P<body>.+?(?:학사|석사|박사|없음)\[[^\]]+\])\s*$"
+            rf"^(?:학력\s+)?(?P<date>\d{{4}}\.\d{{2}}\.\d{{2}})\s+"
+            rf"(?P<body>.+{_EDU_KIND}\[[^\]]+\])\s*$"
         )
         section_start_like = re.compile(
             r"^(?:\d{4}\.\d{2}\.\d{2}\s*~\s*\d{4}\.\d{2}\.\d{2}\b|"
@@ -1433,7 +1437,8 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
                     edu_line_segments.append(line.strip())
 
         for line in edu_line_segments:
-            if not any(k in line for k in ["학사[", "석사[", "박사과정[", "박사수료[", "박사[", "없음["]):
+            # // [수정] 빠른 필터: 고정 토큰 나열 대신 공문서 공통 '학력구분[상태]' 존재 여부
+            if not _EDU_BRACKET_FULL.search(line):
                 continue
             line = _strip_leading_hakryeok_label(line)
             # 패턴이 변형되어도(전공 ')'이 뒤로 붙는 등) 마지막 학위[상태] 토큰을 기준으로 분리한다.
@@ -1443,12 +1448,12 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
             date_raw = (m_date.group("date") or "").strip()
             rest = (m_date.group("rest") or "").strip()
 
-            deg_hits = list(_EDU_DEG_BRACKET.finditer(rest))
+            deg_hits = list(_EDU_BRACKET_FULL.finditer(rest))
             if not deg_hits:
                 continue
             last = deg_hits[-1]
-            degree = (last.group(1) or "").strip()
-            status = (last.group(2) or "").strip()
+            degree = (last.group("deg") or "").strip()
+            status = (last.group("st") or "").strip()
             before = rest[: last.start()].strip()
             after = rest[last.end() :].strip()
 
