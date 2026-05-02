@@ -19,6 +19,8 @@ from parsers.section_parsers import (
     parse_grade_info,
     parse_workplace_info,
     parse_license_info,
+    license_registration_quality_key,
+    is_standalone_license_grade_label,
 )
 from parsers.document_context import DocumentContext
 from parsers.utils.company_change_markers import get_company_change_markers
@@ -131,7 +133,7 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
             if "교육기간" in ln and "과정명" in ln and "교육기관명" in ln:
                 # 진행 중이던 행이 있으면 flush
                 if buf:
-                    rows.append(" ".join(buf).strip())
+                    rows.append(_join_training_row_buf(buf))
                     buf = []
                 in_table = True
                 continue
@@ -139,7 +141,7 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
             # 섹션 종료(기술경력 시작)면 전체 종료
             if "1. 기술경력" in ln:
                 if buf:
-                    rows.append(" ".join(buf).strip())
+                    rows.append(_join_training_row_buf(buf))
                     buf = []
                 stop_all = True
                 break
@@ -152,7 +154,7 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
             # 이 경우 현재 교육훈련 행 버퍼를 flush하고, 교육훈련 표 파싱을 종료한다.
             if award_line_pat.match(ln) and ("~" not in ln):
                 if buf:
-                    rows.append(" ".join(buf).strip())
+                    rows.append(_join_training_row_buf(buf))
                     buf = []
                 in_table = False
                 continue
@@ -160,14 +162,14 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
             # 근무처 영역으로 넘어가면, 이번 페이지의 교육훈련 표는 끝난 것으로 보고 대기 상태로 전환.
             if workplace_like_pat.match(ln) or "근무기간" in ln or ln == "근무처":
                 if buf:
-                    rows.append(" ".join(buf).strip())
+                    rows.append(_join_training_row_buf(buf))
                     buf = []
                 in_table = False
                 continue
 
             if row_start_pat.match(ln):
                 if buf:
-                    rows.append(" ".join(buf).strip())
+                    rows.append(_join_training_row_buf(buf))
                     buf = []
                 buf.append(ln)
                 continue
@@ -194,7 +196,7 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
             break
 
     if buf:
-        rows.append(" ".join(buf).strip())
+        rows.append(_join_training_row_buf(buf))
     return rows
 
 
@@ -215,6 +217,17 @@ def _smart_concat(a: str, b: str) -> str:
     if _is_hangul_char(a[-1]) and _is_hangul_char(b[0]) and not a.endswith((")", " ")):
         return a + b
     return a + " " + b
+
+
+def _join_training_row_buf(buf: list[str]) -> str:
+    # [수정] 동일 표 행이 PDF 줄바꿈으로 쪼개질 때 " ".join을 쓰면 셀 내부 한글이 단어 한가운데에서
+    # 끊긴 것처럼 보이는 불필요 공백이 생긴다. 줄 단위 trim 후 경계마다 _smart_concat으로 이어붙인다.
+    if not buf:
+        return ""
+    acc = (buf[0] or "").strip()
+    for part in buf[1:]:
+        acc = _smart_concat(acc, (part or "").strip())
+    return acc.strip()
 
 
 def _parse_training_row(row_text: str) -> dict | None:
@@ -1468,11 +1481,13 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
             # 학과는 보통 '...과/학과/전공/학부' 형태의 토큰으로 나타난다.
             # pdf 텍스트 추출이 '전문' 같은 학력구분 토큰을 별도 단어로 붙이는 경우가 있어
             # 단순 "마지막 토큰" 규칙은 오탐이 많다 → 학과 후보를 우선 탐색한다.
+            # // [수정] 학부+전공 등 복수 토큰 학과에서 오른쪽 토큰만 잡으면
+            #   '농업시스템공학부 농공학전공' → 학과=농공학전공, 학교 꼬리에 학부가 남아
+            #   '(現:…)' 분리 후 이전 학교명에 학부까지 붙는 오류가 난다. 첫 학과형 토큰부터 학과 블록으로 본다.
             major_idx = None
-            for wi in range(len(words) - 1, -1, -1):
-                w = words[wi].strip()
+            for wi, w in enumerate(words):
+                w = w.strip()
                 if any(w.endswith(suf) for suf in ["학과", "전공", "학부", "과"]):
-                    # 너무 일반적인 단어(예: '과정')는 제외
                     if w in {"과정"}:
                         continue
                     major_idx = wi
@@ -1491,15 +1506,16 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
                 major = words[-1].strip()
                 school = " ".join(words[:-1]).strip()
             else:
-                major = words[major_idx].strip()
+                # // [수정] major_idx 이후는 모두 학과 블록; 끝의 전문/일반 등 학력구분 토큰만 제거
+                end_i = len(words)
+                while end_i > major_idx:
+                    cand = words[end_i - 1].strip()
+                    if cand in {"전문", "일반", "야간", "주간"}:
+                        end_i -= 1
+                        continue
+                    break
+                major = " ".join(words[major_idx:end_i]).strip()
                 school = " ".join(words[:major_idx]).strip()
-
-                # 학과 뒤에 붙는 학력구분(전문/일반 등) 토큰은 학교/학과에서 제외(요구 스키마 밖)
-                if major_idx + 1 < len(words):
-                    tail_tok = words[major_idx + 1].strip()
-                    if tail_tok in {"전문", "일반", "야간", "주간"}:
-                        # drop
-                        pass
             if after:
                 major = (major + " " + after).strip()
             # 표 헤더 '학력' 이 학과 끝에 붙는 추출 오류 제거
@@ -1915,14 +1931,15 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
                     return n
 
                 def _key(r: dict) -> tuple:
-                    # 등록번호가 있으면 가장 안정적인 키
+                    # // [수정] (합격일, 등록번호)가 같으면 동일 자격이다. 종목만 '기사' 등으로 쪼개진 경우
+                    # (종목, 합격일) 키로는 2행이 남아 품질검증이 실패하므로 등록번호 우선 키를 쓴다.
                     dt = _norm_space(str(r.get("합격일") or ""))
-                    reg = _normalize_reg(str(r.get("등록번호") or ""))
+                    reg_k = re.sub(r"\s+", "", _normalize_reg(str(r.get("등록번호") or "")))
+                    if reg_k and len(reg_k) >= 8 and re.search(r"\d", reg_k):
+                        return ("dt_reg", dt, reg_k.upper())
                     name = _norm_space(str(r.get("종목") or ""))
-                    if reg:
-                        return ("reg", dt, reg)
-                    # 등록번호가 비는 문서도 있어 보조 키 사용
-                    return ("name", dt, re.sub(r"\s+", "", name))
+                    nm_key = re.sub(r"\s+", "", name)
+                    return ("name_dt", nm_key, dt)
 
                 best_by_key: dict[tuple, dict] = {}
                 for r in rows:
@@ -1945,16 +1962,21 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
                         best_by_key[k] = r2
                         continue
                     # 같은 키면 더 "완전한" 레코드 우선:
-                    # 1) 종목명이 더 긴 쪽
-                    # 2) 등록번호 유무
-                    # 3) 합격일 유무
-                    def _score(x: dict) -> tuple:
-                        name_len = len(str(x.get("종목") or "").strip())
-                        has_reg = 1 if str(x.get("등록번호") or "").strip() else 0
-                        has_dt = 1 if str(x.get("합격일") or "").strip() else 0
-                        return (name_len, has_reg, has_dt)
+                    # // [수정] 접미사-only 종목명·등록-년도 정합·종목명 길이로 동일 (일+등록번호) 충돌 해소
+                    def _row_rank(x: dict) -> tuple:
+                        dtx = _norm_space(str(x.get("합격일") or ""))
+                        nmx = str(x.get("종목") or "").strip()
+                        rgx = _normalize_reg(str(x.get("등록번호") or ""))
+                        qx = license_registration_quality_key(dtx, rgx)
+                        return (
+                            0 if is_standalone_license_grade_label(nmx) else 1,
+                            qx[0],
+                            qx[1],
+                            qx[2],
+                            len(nmx),
+                            qx[3],
+                        )
 
-                    # 접두/접미 관계면 긴 쪽으로 승격(잘림 복원)
                     a = str(cur.get("종목") or "")
                     b = str(r2.get("종목") or "")
                     if a and b:
@@ -1963,13 +1985,43 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
                             continue
                         if b.replace(" ", "") in a.replace(" ", "") and len(a) >= len(b):
                             continue
-                    if _score(r2) > _score(cur):
+                    if _row_rank(r2) > _row_rank(cur):
                         best_by_key[k] = r2
 
                 dedup = list(best_by_key.values())
-                # 정렬: 합격일, 종목
-                dedup.sort(key=lambda x: (str(x.get("합격일") or ""), str(x.get("종목") or "")))
-                result["국가기술자격"] = dedup
+                # // [수정] 텍스트/표 결합 후 동일 날짜·동일 종목으로 남은 상충 행 정리(section_parsers 2차 병합 정책과 동일 맥락)
+                merged_qual: dict[tuple[str, str], dict] = {}
+                for r_item in dedup:
+                    iso2 = _norm_space(str(r_item.get("합격일") or ""))
+                    nk = re.sub(r"\s+", "", str(r_item.get("종목") or "").strip())
+                    kz = (iso2, nk)
+                    prev = merged_qual.get(kz)
+                    if prev is None:
+                        merged_qual[kz] = r_item
+                        continue
+
+                    def _row_rank_inner(x: dict) -> tuple:
+                        dtx = _norm_space(str(x.get("합격일") or ""))
+                        nmx = str(x.get("종목") or "").strip()
+                        rgx = _normalize_reg(str(x.get("등록번호") or ""))
+                        qx = license_registration_quality_key(dtx, rgx)
+                        return (
+                            0 if is_standalone_license_grade_label(nmx) else 1,
+                            qx[0],
+                            qx[1],
+                            qx[2],
+                            len(nmx),
+                            qx[3],
+                        )
+
+                    if _row_rank_inner(r_item) > _row_rank_inner(prev):
+                        merged_qual[kz] = r_item
+
+                dedup_final = list(merged_qual.values())
+                dedup_final.sort(
+                    key=lambda x: (str(x.get("합격일") or ""), str(x.get("종목") or ""))
+                )
+                result["국가기술자격"] = dedup_final
         except Exception:
             pass
 

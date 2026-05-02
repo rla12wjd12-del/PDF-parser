@@ -31,6 +31,7 @@ from parsers.table_settings import (
 )
 from parsers.table_career_parser import (
     find_header_start_row,
+    merge_extra_rows_into_career_four_row_block,
     merge_into_previous,
     normalize_table_to_6cols,
     parse_period_cell,
@@ -452,21 +453,17 @@ def _iter_page2_tech_records_by_period_rows(
 
     blank = [""] * 6
     for blk in blocks:
-        r0 = blk[0] if len(blk) >= 1 else blank
-        r1 = blk[1] if len(blk) >= 2 else blank
-        r2 = blk[2] if len(blk) >= 3 else blank
-        r3 = list(blk[3]) if len(blk) >= 4 else list(blank)
-        if len(r3) < 6:
-            r3.extend([""] * (6 - len(r3)))
-        for extra in blk[4:]:
-            for j in range(6):
-                v = (extra[j] if j < len(extra) else "") or ""
-                v = v.strip()
-                if not v:
-                    continue
-                old = (r3[j] or "").strip()
-                r3[j] = (old + "\n" + v).strip() if old else v
-        yield (r0, r1, r2, r3)
+        # [수정] 5행째+ ┖→ 연장 행은 전부 r3가 아니라 열 패턴에 맞는 물리 줄(r0~r3)에 병합(CM 표와 동일)
+        rows4: list[list[str]] = []
+        for i in range(4):
+            src = blk[i] if len(blk) > i else blank
+            rr = list(src[:6]) if isinstance(src, (list, tuple)) else list(blank)
+            if len(rr) < 6:
+                rr.extend([""] * (6 - len(rr)))
+            rows4.append(rr[:6])
+        if len(blk) > 4:
+            merge_extra_rows_into_career_four_row_block(rows4, blk[4:], width=6)
+        yield (rows4[0], rows4[1], rows4[2], rows4[3])
 
 
 @lru_cache(maxsize=1)

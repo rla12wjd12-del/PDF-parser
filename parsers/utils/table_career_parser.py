@@ -233,6 +233,189 @@ def parse_period_cell(cell_text: str, *, yyyy_mm_dd_to_iso) -> PeriodParse:
     return PeriodParse(start_iso=start_iso, end_iso=end_iso, 인정일수=인정, 참여일수=참여, has_continue_arrow=has_arrow)
 
 
+# ── Intra-block merge (기술경력·CM 표 공통): 5행째 ┖→ 연장 행을 물리 4줄 중 올바른 줄에 합침
+
+
+# [수정] 같은 경력 블록 내 셀 조각 결합(CM/page2 공통)·선행 ┖→ 제거
+def merge_career_intrablock_cell_fragments(acc: str, frag: str) -> str:
+    p = (acc or "").strip()
+    f = (frag or "").strip()
+    f = re.sub(r"^\s*┖→\s*", "", f).strip()
+    if not f:
+        return p
+    if not p:
+        return f
+    return (p + f).strip()
+
+
+def career_overview_numeric_tail_token(open_text: str) -> bool:
+    """개요 마지막 토큰이 숫자/소수로 끊긴 경우(이어지는 측정 조각 판별용)."""
+    ov = (open_text or "").strip()
+    if not ov:
+        return False
+    last = ov.split()[-1].strip()
+    last = last.replace(",", "")
+    if re.fullmatch(r"\d(?:\.\d{0,12})?", last):
+        return True
+    if re.fullmatch(r"\.\d+", last):
+        return True
+    return False
+
+
+def career_piece_looks_measure_tail(s: str) -> bool:
+    t = re.sub(r"\s+", "", (s or "").strip())
+    if not t or len(t) > 48:
+        return False
+    t = t.replace(",", "").replace("㎞", "km")
+    return bool(
+        re.fullmatch(r"\d+(?:\.\d+)?(?:㎥|㎡|%|개소외?|개소|km|m|/min|[a-zA-Z]+)", t, re.I)
+    )
+
+
+_SLOTS_HINT_COLS = (
+    frozenset({0, 1, 3, 4, 5}),  # r0 참여기간·사업명·직무 등
+    frozenset({1, 2, 3, 4}),  # r1 발주자·공사종류·전문분야 등
+    frozenset({1, 3, 4}),  # r2 개요·책임·금액
+    frozenset({1, 2, 3, 4}),  # r3 적용 공법 등
+)
+
+
+def pick_career_intrablock_slot_for_extra_cell(
+    j: int,
+    *,
+    frag: str,
+    base4: list[list[str]],
+    width: int,
+) -> int:
+    """
+    [수정] 연장 행의 한 칸(column j)이 r0~r3 중 어디로 가야 하는지 선택.
+    (행 단일 슬롯이면 col1 개요 보강이 발주자/적용 줄로 잘못 붙던 문제 발생)
+    """
+    hints = _SLOTS_HINT_COLS
+    scores = [float("-inf")] * 4
+    fx = str(frag or "").replace("\n", " ").strip()
+    if not fx or j >= width:
+        return 2
+    for s in range(4):
+        if j not in hints[s]:
+            continue
+        scores[s] = 0.0
+        scores[s] += 3.0
+        bj = str(base4[s][j] or "").strip() if s < len(base4) and j < len(base4[s]) else ""
+        if bj:
+            scores[s] += 10.0
+        if (
+            j == 1
+            and s == 2
+            and len(base4) > 2
+            and len(base4[2]) > 1
+            and career_overview_numeric_tail_token(base4[2][1])
+            and career_piece_looks_measure_tail(fx)
+        ):
+            scores[s] += 55.0
+    eligible = [(s, scores[s]) for s in range(4) if scores[s] > float("-inf")]
+    if not eligible:
+        synth = [""] * width
+        if j < width:
+            synth[j] = fx
+        return pick_career_intrablock_slot_for_extra_row(synth, base4, width=width)
+    best_score = max(sc for _, sc in eligible)
+
+    cell_pref_defaults: dict[int, list[int]] = {
+        # [수정] 공통 열별 재사용 열 처리: 동점 시 이 순으로 슬롯 고정 (개요 연장 우선 등)
+        1: [2, 1, 0, 3],
+        2: [1, 3, 2, 0],
+        3: [1, 2, 3, 0],
+        4: [0, 1, 2, 3],
+    }
+    pref_base = cell_pref_defaults.get(j, [2, 1, 3, 0])
+    pref = [*pref_base, 0, 1, 2, 3]
+    seen: set[int] = set()
+    for i in pref:
+        if i in seen:
+            continue
+        seen.add(i)
+        if scores[i] == best_score:
+            return i
+    return max(range(4), key=lambda i: scores[i])
+
+
+def pick_career_intrablock_slot_for_extra_row(
+    extra: list[str],
+    base4: list[list[str]],
+    *,
+    width: int,
+) -> int:
+    # [수정] 6열 4물리줄에서 연장 행 슬롯 추정 — 공사종류·개요가 적용 공법 줄로만 합쳐지던 오류 방지
+    hints = _SLOTS_HINT_COLS
+    scores = [0.0] * 4
+    for s in range(4):
+        for j in hints[s]:
+            if j >= min(len(extra), width):
+                continue
+            ex = str(extra[j] or "").replace("\n", " ").strip()
+            if not ex:
+                continue
+            scores[s] += 3.0
+            bj = str(base4[s][j] or "").strip() if j < len(base4[s]) else ""
+            if bj:
+                scores[s] += 10.0
+            if (
+                j == 1
+                and s == 2
+                and len(base4) > 2
+                and len(base4[2]) > 1
+                and career_overview_numeric_tail_token(base4[2][1])
+                and career_piece_looks_measure_tail(ex)
+            ):
+                scores[s] += 55.0
+    best_score = max(scores)
+    # [수정] 동점 시 r1 을 r3 보다 우선 — 공사종류 열(ATM)·개요 우선 순서 조정 아래 참고
+    pref = [2, 1, 3, 0]
+    for i in pref:
+        if scores[i] == best_score:
+            best = i
+            break
+    else:
+        best = max(range(4), key=lambda i: scores[i])
+    if scores[best] <= 0:
+        return 1
+    return best
+
+
+def merge_extra_rows_into_career_four_row_block(
+    base: list[list[str]],
+    extras: Iterable[Sequence[Any]],
+    *,
+    width: int = 6,
+) -> None:
+    # [수정] 한 경력 base[0:4] 가변 수정 — 5행째 이후: 셀마다 슬롯 선택 후 병합
+    for raw in extras:
+        exn = [_cell_str(c) for c in (raw or [])]
+        while len(exn) < width:
+            exn.append("")
+        exn = exn[:width]
+        for j in range(width):
+            frag = str(exn[j] or "").strip()
+            if not frag:
+                continue
+            slot = pick_career_intrablock_slot_for_extra_cell(
+                j, frag=frag, base4=base, width=width
+            )
+            if slot == 0 and j == 0:
+                comp = frag.replace(" ", "").replace("\n", "")
+                if comp in {"", "┖→"}:
+                    continue
+                if ("┖→" in frag) and (_DATE_TOKEN.search(frag) is None):
+                    tail = merge_career_intrablock_cell_fragments("", frag)
+                    if tail:
+                        ov = str(base[2][1] or "").strip() if len(base) > 2 and len(base[2]) > 1 else ""
+                        base[2][1] = merge_career_intrablock_cell_fragments(ov, tail)
+                    continue
+            cur = str(base[slot][j] or "").strip()
+            base[slot][j] = merge_career_intrablock_cell_fragments(cur, frag)
+
+
 def iter_records_4rows(table6: list[list[str]], *, header_start: int) -> Iterator[list[list[str]]]:
     """
     헤더 시작 행(header_start) 이후의 데이터 영역을 4행 블록으로 반환한다.

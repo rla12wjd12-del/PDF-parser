@@ -8,7 +8,7 @@ import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional, Sequence
 import re
 import json
 import time
@@ -24,6 +24,7 @@ from parsers.table_settings import LINE_TABLE_SETTINGS, VIRTUAL_LEFT_X, VIRTUAL_
 from parsers.table_career_parser import (
     find_header_start_row,
     iter_records_4rows,
+    merge_extra_rows_into_career_four_row_block,
     merge_into_previous,
     normalize_table_to_6cols,
     parse_period_cell,
@@ -103,6 +104,31 @@ def _yyyy_mm_dd_to_iso(date_str: str) -> str:
     return ""
 
 
+def _keep_parsed_cm_career_record(row: Dict[str, Any]) -> bool:
+    """// [수정] 참여기간 한 건도 못 받은 줄은 다른 섹션(업무요약·배치금지 등) 표 잔재이다."""
+    if not isinstance(row, dict):
+        return False
+    start = str(row.get("참여기간_시작일") or "").strip()
+    end = str(row.get("참여기간_종료일") or "").strip()
+    return bool(start or end)
+
+
+def _finalize_cm_page_rows(
+    rows: Optional[List[Dict[str, Any]]],
+    page_num_1based: int,
+) -> List[Dict[str, Any]]:
+    """// [수정] 페이지 단일 반환 공통 처리: 페이지 메타 + 무효 CM 행 제거(표 폴백 경로 포함)"""
+    out: List[Dict[str, Any]] = []
+    for _r in rows or []:
+        if not isinstance(_r, dict):
+            continue
+        if "_pdf_pages" not in _r:
+            _r["_pdf_pages"] = [page_num_1based]
+        if _keep_parsed_cm_career_record(_r):
+            out.append(_r)
+    return out
+
+
 def _blank_cm_career_row() -> Dict[str, Any]:
     # 기술경력과 동일한 출력 스키마를 최대한 유지(사용자 요구: 키 삭제 금지 방향)
     return {
@@ -126,6 +152,107 @@ def _blank_cm_career_row() -> Dict[str, Any]:
         "시설물 종류": "",
         "비고": "",
     }
+
+
+def _normalize_cm_row_cells_to_width(row: Sequence[Any] | None, *, width: int) -> list[str]:
+    cells = [str(c or "").replace("\r\n", "\n").replace("\r", "\n").strip() for c in (row or [])]
+    if len(cells) < width:
+        cells.extend([""] * (width - len(cells)))
+    return cells[:width]
+
+
+# // [수정] 참여기간 셀이 아니면서도 행 하나에 우연히 YYYY.MM.DD 1어만 있으면 새 경력으로 분리되어
+#        주석·배치금지 표까지 표 경력으로 섞일 수 있다(단일 발급일/문서번호 등).
+_CM_FULL_DATE_ANY = re.compile(r"\d{4}\.\d{2}\.\d{2}")
+
+
+def _cm_ym_tokens_excluding_day_precision(joined_space: str) -> list[str]:
+    """
+    // [수정] PDF에서 요일까지 없이 YYYY.MM만 나오는 참여기간(표 셀)도 레코드 앵커로 인식한다.
+    품질 유지용: 먼저 YYYY.MM.DD를 통째로 제거한 뒤, 단독으로 남는 YYYY.MM만 센다.
+    """
+    s = joined_space or ""
+    stripped = _CM_FULL_DATE_ANY.sub(" ", s)
+    return list(re.findall(r"\b\d{4}\.\d{2}\b(?!\.\d)", stripped))
+
+
+_CM_HEAD_ANNOTATION_HINT = re.compile(
+    r"^\s*[※〇○❍◦ⓞ]\s*",  # [수정] CM 표 주석/요약 줄(건설사업관리 업무수행기간 블록 등) 걸름
+)
+
+
+def _is_cm_annotation_joined_head_row(row: list[str]) -> bool:
+    # // [수정] 헤더/주석 줄이 참여기간 열처럼 보일 때 새 레코드 분리되는 것 완화
+    joined_compact = "".join(str(c or "") for c in (row or [])).replace("\n", " ").strip()
+    if not joined_compact:
+        return False
+    if _CM_HEAD_ANNOTATION_HINT.search(joined_compact):
+        return True
+    if joined_compact.startswith("「건설") or joined_compact.startswith("건설사업관리 업무수행기간"):
+        return True
+    return False
+
+
+def _row_looks_cm_nondata_summary_row(row: list[str]) -> bool:
+    # // [수정] 업무요약 장문·제3쪽 배치금지 표 줄이 같은 pdfplumber 테이블에 붙어 오는 분기
+    jn = "".join(str(c or "") for c in (row or [])).replace("\n", " ").replace(" ", "").strip()
+    if not jn:
+        return False
+    if "배치금지" in jn:
+        return True
+    if "**해당없음**" in jn or "**해당없음*" in jn:
+        return True
+    # 제3섹션 표 헤더 잔류(내용물만 있고 참여기간은 없음; 앵커가 아니면 레코드 꼬리로 붙으면 안 됨)
+    if "용역명" in jn and "근무형태" in jn:
+        return True
+    return False
+
+
+def _is_cm_period_anchor_row(row: list[str]) -> bool:
+    # // [수정] 새 CM 경력 블록 첫 줄: YYYY.MM.DD 2개 이상 · YYYY.MM 2개 이상 · 또는 (날짜 1토큰+~ 또는 근무중) 또는 (풀+월만 혼합 2토큰)
+    if _is_cm_annotation_joined_head_row(row):
+        return False
+    if not row:
+        return False
+    joined_space = " ".join(str(c or "") for c in (row or []))
+    joined_nospace = re.sub(r"\s+", "", joined_space)
+    n_full = len(_CM_FULL_DATE_ANY.findall(joined_space))
+    ym_only = _cm_ym_tokens_excluding_day_precision(joined_space)
+    n_ym = len(ym_only)
+
+    period_tokens = n_full + n_ym
+    if period_tokens >= 2:
+        return True
+    has_tilde_span = "~" in joined_nospace or "〜" in joined_nospace or "～" in joined_nospace
+    if period_tokens == 1:
+        # 한 토큰만 있어도 ~ 구간(또는 근무중)이 있으면 참여기간 행일 수 있다.
+        return bool(
+            has_tilde_span
+            or ("근무중" in joined_nospace)
+            or ("근무" in joined_space and "중" in joined_space)
+        )
+    return False
+
+
+def _squash_cm_record_rows_to_four(rec: list[list[str]], *, width: int = 6) -> list[list[str]]:
+    # // [수정] 한 페이지·한 경력에 ┖→ 연장 행이 4행 밖으로 밀려 나와도 버리지 않고 동일 블록에 병합(table_career_parser 공통 구현 호출)
+    blank = [""] * width
+    if not rec:
+        return [list(blank), list(blank), list(blank), list(blank)]
+
+    norm = [_normalize_cm_row_cells_to_width(r, width=width) for r in rec]
+    while len(norm) < 4:
+        norm.append(list(blank))
+
+    base = [list(r) for r in norm[:4]]
+    for s in range(4):
+        while len(base[s]) < width:
+            base[s].append("")
+        base[s] = base[s][:width]
+
+    merge_extra_rows_into_career_four_row_block(base, norm[4:], width=width)
+
+    return base
 
 
 _CM_STOP_KEYWORDS_STRICT = (
@@ -188,13 +315,6 @@ def _parse_cm_careers_from_raw_table(
     if hs is None:
         return []
 
-    def _is_period_start_row(row: list[str]) -> bool:
-        if not row:
-            return False
-        # period row는 보통 어딘가에 'YYYY.MM.DD'를 포함(열이 밀리는 케이스 대비)
-        joined = " ".join(str(c or "") for c in (row or []))
-        return bool(re.search(r"\b\d{4}\.\d{2}\.\d{2}\b", joined))
-
     def _iter_cm_records(table6: list[list[str]], *, header_start: int) -> list[list[list[str]]]:
         """
         CM 테이블은 pdfplumber 추출 품질에 따라 4행 블록이 깨질 수 있어
@@ -208,7 +328,8 @@ def _parse_cm_careers_from_raw_table(
         # 헤더 크기가 문서마다 달라, header_start 이후 가까운 구간에서 첫 데이터(기간) 시작 행을 찾는다.
         data_start = None
         for i in range(header_start, min(len(table6), header_start + 12)):
-            if _is_period_start_row(table6[i] or []):
+            # // [수정] 참여기간 앵커(2토큰이상 또는 ~+토큰)만 데이터 시작 인정 → 단발 날짜/주석행 오분리 차단
+            if _is_cm_period_anchor_row(table6[i] or []):
                 data_start = i
                 break
         if data_start is None:
@@ -220,7 +341,16 @@ def _parse_cm_careers_from_raw_table(
         records: list[list[list[str]]] = []
         cur: list[list[str]] = []
         for r in rows:
-            if _is_period_start_row(r):
+            # // [수정] 업무요약 각주 줄이 이전 경력 레코드 꼬리로 병합되지 않도록 먼저 커서를 종료하고 버린다.
+            if (_is_cm_annotation_joined_head_row(r) or _row_looks_cm_nondata_summary_row(r)) and not (
+                _is_cm_period_anchor_row(r)
+            ):
+                if cur:
+                    records.append(cur)
+                    cur = []
+                continue
+
+            if _is_cm_period_anchor_row(r):
                 if cur:
                     records.append(cur)
                 cur = [r]
@@ -233,13 +363,9 @@ def _parse_cm_careers_from_raw_table(
             records.append(cur)
 
         # normalize to 4 rows
-        out: list[list[list[str]]] = []
-        blank = [""] * 6
-        for rec in records:
-            rec2 = (rec or [])[:4]
-            if len(rec2) < 4:
-                rec2 = rec2 + [blank[:] for _ in range(4 - len(rec2))]
-            out.append(rec2)
+        # // [수정] (rec[:4] 잘림) 같은 경력의 5행째+ ┖→ 연장까지 한 블록으로 병합
+        tbl_w = max(6, len(table6[0]) if table6 else 6)
+        out = [_squash_cm_record_rows_to_four(rec or [], width=tbl_w) for rec in records]
         return out
 
     # 헤더 이후 데이터 영역에서 stop 키워드가 등장하면 그 이전까지만 남긴다.
@@ -374,7 +500,9 @@ def _parse_cm_careers_from_raw_table(
                 pass
             continue
 
-        out.append(row)
+        # // [수정] 유효한 참여기간이 없는 표행은 결과에 넣지 않는다.
+        if _keep_parsed_cm_career_record(row):
+            out.append(row)
 
     return out
 
@@ -1058,10 +1186,8 @@ def parse_page_3(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]]:
         except Exception:
             table_rows = []
         if table_rows:
-            for _r in (table_rows or []):
-                if isinstance(_r, dict) and "_pdf_pages" not in _r:
-                    _r["_pdf_pages"] = [page_num_1based]
-            return table_rows
+            # // [수정] 표 우선 경로도 폴백과 동일하게 유효 레코드만 반환
+            return _finalize_cm_page_rows(table_rows, page_num_1based)
 
         # 0) 위치(템플릿) 기반 파싱 1차 시도
         # - 기술경력과 동일하게 word bbox로 열을 직접 분리해 '사업명 오염'을 줄인다.
@@ -1077,9 +1203,6 @@ def parse_page_3(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]]:
             words = ctx.get_words(page_num, engine="auto") or []
             tpl_rows, tpl_meta = parse_cm_page_by_template(words)
             if is_tech_template_result_trustworthy(tpl_rows, tpl_meta):
-                for _r in (tpl_rows or []):
-                    if isinstance(_r, dict) and "_pdf_pages" not in _r:
-                        _r["_pdf_pages"] = [page_num_1based]
                 # FIX: CM 템플릿도 블록 누락 감지(페이지 내 '~' 라인 하한보다 작으면 폴백)
                 try:
                     raw_lines_full = [
@@ -1167,7 +1290,8 @@ def parse_page_3(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]]:
                         "tpl_meta": tpl_meta or {},
                     },
                 )
-                return tpl_rows
+                # // [수정] 무효 CM 행 필터 및 페이지메타 통일
+                return _finalize_cm_page_rows(tpl_rows, page_num_1based)
         except Exception:
             pass
 
@@ -1201,10 +1325,7 @@ def parse_page_3(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]]:
                     r.update(tp)
                     r.update(date_blocks[i])
                     out_rows.append(r)
-                for _r in (out_rows or []):
-                    if isinstance(_r, dict) and "_pdf_pages" not in _r:
-                        _r["_pdf_pages"] = [page_num_1based]
-                return out_rows
+                return _finalize_cm_page_rows(out_rows, page_num_1based)
 
             # date_blocks 기준으로 누락 없이 행 생성 후, 사업명은 시작일 **직전** 텍스트에서 역방향 수집(기술경력과 동일).
             if word_lines:
@@ -1264,7 +1385,8 @@ def parse_page_3(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]]:
                 out_rows = table_projects[:] if table_projects else []
 
             out_rows = _enrich_from_table_by_project_name(out_rows, table_projects)
-            return out_rows
+            # // [수정] _extract_cm_projects_from_table 단독 폴백 시 유령 행·페이지메타 누락 방지
+            return _finalize_cm_page_rows(out_rows, page_num_1based)
 
         if date_blocks:
             if word_lines:
@@ -1315,16 +1437,10 @@ def parse_page_3(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]]:
                 r.update(date_blocks[b])
                 out_rows.append(r)
                 b += 1
-            for _r in (out_rows or []):
-                if isinstance(_r, dict) and "_pdf_pages" not in _r:
-                    _r["_pdf_pages"] = [page_num_1based]
-            return out_rows
+            return _finalize_cm_page_rows(out_rows, page_num_1based)
 
     except Exception as e:
         print(f"❌ 제3쪽 파싱 오류: {e}")
     
-    for _r in (careers or []):
-        if isinstance(_r, dict) and "_pdf_pages" not in _r:
-            _r["_pdf_pages"] = [page_num_1based]
-    return careers
+    return _finalize_cm_page_rows(careers, page_num_1based)
 
