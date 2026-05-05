@@ -2,16 +2,32 @@
 # -*- coding: utf-8 -*-
 """
 제1쪽 파서: 인적사항, 등급, 국가기술자격, 학력, 교육훈련, 상훈, 벌점 및 제재사항, 근무처
+
+표 기반(우선): 각 스캔 페이지에 대해 pdfplumber `explicit_vertical_lines` (X=27, X=567)로
+표를 추출한 뒤 행을 섹션별로 분류하고, `parse_page_1_from_text` 결과와 병합한다.
+
+수동 점검(가정: 로컬에 테스트 PDF가 있음):
+  - `external/PDF-parser`에서 `python main.py <PDF경로>` (프로젝트 CLI에 맞게 인자 조정)
+  - 출력 JSON에서 인적사항/등급/자격/학력/교육훈련/근무처 필드가 누락 없이 채워졌는지 확인
+  - CI/샌드박스에 샘플 PDF가 없으면 자동 회귀 테스트는 생략될 수 있음(TODO)
 """
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from typing import Dict, Any
+from typing import Any, Dict, List, Optional, Tuple
 import csv
 import re
 from datetime import datetime
+
+from parsers.table_settings import (
+    LINE_TABLE_SETTINGS,
+    extract_tables_merged,
+    pick_best_table,
+    safe_extract_tables,
+)
+from parsers.utils.logger import agent_debug_log as _page1_agent_log
 from parsers.section_parsers import (
     parse_award_info,
     AWARD_NOT_APPLICABLE_TEMPLATE,
@@ -1127,6 +1143,929 @@ def _split_merged_education_line(line: str) -> list[str]:
     return out
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# Page 1 표 기반 파싱: 가상 세로선(요구사항 X=27, X=567) + pdfplumber 표 추출
+# ──────────────────────────────────────────────────────────────────────────────
+PAGE1_VIRTUAL_LEFT_X: float = 27.0
+PAGE1_VIRTUAL_RIGHT_X: float = 567.0
+
+PAGE1_LINE_TABLE_SETTINGS: dict[str, Any] = {
+    **LINE_TABLE_SETTINGS,
+    "explicit_vertical_lines": [PAGE1_VIRTUAL_LEFT_X, PAGE1_VIRTUAL_RIGHT_X],
+}
+
+PAGE1_LINE_TABLE_SETTINGS_ALT: dict[str, Any] = {
+    **LINE_TABLE_SETTINGS,
+    "explicit_vertical_lines": [27.0, 560.0],
+}
+
+
+def _extract_license_section_text(raw: str) -> str:
+    """국가기술자격 섹션 텍스트만 잘라낸다 (parse_page_1_from_text와 동일 규칙)."""
+    if not raw:
+        return ""
+    t = re.sub(r"[ \t]+", " ", raw)
+    m = re.search(
+        r"(국가기술자격[\s\S]*?)(?=\n\s*(?:학력|교육훈련|상훈|벌점|제재사항|근무처)\b|\Z)",
+        t,
+        flags=0,
+    )
+    return (m.group(1) if m else "")
+
+
+def _parse_grade_dict_from_normalized_text(text_normalized: str) -> Dict[str, str]:
+    """등급 9필드 dict (빈 문자열 기본)."""
+    grade: Dict[str, str] = {
+        "설계시공_등_직무분야": "",
+        "설계시공_등_직무분야_등급": "",
+        "설계시공_등_전문분야": "",
+        "설계시공_등_전문분야_등급": "",
+        "건설사업관리_직무분야": "",
+        "건설사업관리_직무분야_등급": "",
+        "건설사업관리_전문분야": "",
+        "건설사업관리_전문분야_등급": "",
+        "품질관리_등급": "",
+    }
+    simple_pattern = (
+        r"([\w가-힣]+)\s+(고급|중급|초급|특급)\s+\*\*\s*해당없음\s*\*\*\s+([\w가-힣]+)\s+(고급|중급|초급|특급)"
+    )
+    match = re.search(simple_pattern, text_normalized)
+    if match:
+        grade["설계시공_등_직무분야"] = match.group(1)
+        grade["설계시공_등_직무분야_등급"] = match.group(2)
+        grade["건설사업관리_직무분야"] = match.group(3)
+        grade["건설사업관리_직무분야_등급"] = match.group(4)
+    try:
+        if not match:
+            from field_catalog import get_field_catalog, best_match_specialty  # lazy import
+
+            catalog = get_field_catalog(
+                project_root=os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+            )
+            grade_tokens_pat = r"(특급|고급|중급|초급)"
+
+            def _cut(src: str, start_kw: str, end_kws: list[str]) -> str:
+                if not src:
+                    return ""
+                sidx = src.find(start_kw)
+                if sidx < 0:
+                    return ""
+                sub = src[sidx + len(start_kw) :]
+                epos = None
+                for ek in end_kws:
+                    j = sub.find(ek)
+                    if j >= 0:
+                        epos = j if epos is None else min(epos, j)
+                return sub[:epos] if epos is not None else sub
+
+            design_block = _cut(text_normalized, "설계·시공 등", ["건설사업관리", "품질관리"])
+            cm_block = _cut(
+                text_normalized,
+                "건설사업관리",
+                ["품질관리", "국가기술자격", "학력", "교육훈련", "상훈", "벌점", "근무처", "1. 기술경력"],
+            )
+
+            def _pick_job_and_grade(block: str) -> tuple[str, str]:
+                for jf in catalog.job_fields:
+                    m = re.search(rf"{re.escape(jf)}\s*{grade_tokens_pat}", block or "")
+                    if m:
+                        return jf, m.group(1)
+                return "", ""
+
+            def _pick_specialty_and_grade(block: str) -> tuple[str, str]:
+                for sp in sorted(catalog.all_specialties, key=len, reverse=True):
+                    if not sp:
+                        continue
+                    m = re.search(rf"{re.escape(sp)}\s*{grade_tokens_pat}", block or "")
+                    if m:
+                        return sp, m.group(1)
+                sp2 = best_match_specialty(block or "", catalog)
+                if sp2:
+                    m2 = re.search(rf"{re.escape(sp2)}\s*{grade_tokens_pat}", block or "")
+                    if m2:
+                        return sp2, m2.group(1)
+                return "", ""
+
+            jf, jg = _pick_job_and_grade(design_block)
+            sp, sg = _pick_specialty_and_grade(design_block)
+            if jf and jg:
+                grade["설계시공_등_직무분야"] = jf
+                grade["설계시공_등_직무분야_등급"] = jg
+            if sp and sg:
+                grade["설계시공_등_전문분야"] = sp
+                grade["설계시공_등_전문분야_등급"] = sg
+
+            jf, jg = _pick_job_and_grade(cm_block)
+            sp, sg = _pick_specialty_and_grade(cm_block)
+            if jf and jg:
+                grade["건설사업관리_직무분야"] = jf
+                grade["건설사업관리_직무분야_등급"] = jg
+            if sp and sg:
+                grade["건설사업관리_전문분야"] = sp
+                grade["건설사업관리_전문분야_등급"] = sg
+
+            m_q = re.search(rf"품질관리\s*{grade_tokens_pat}", text_normalized)
+            if m_q:
+                grade["품질관리_등급"] = m_q.group(1)
+    except Exception:
+        pass
+    return grade
+
+
+def _parse_education_from_combined_text(combined_text: str) -> List[Dict[str, Any]]:
+    """학력 섹션과 동일한 규칙으로 combined_text에서 학력 리스트만 추출한다."""
+    edu_rows: list[dict] = []
+    edu_start_pat = re.compile(
+        rf"^(?:학력\s+)?(?P<date>\d{{4}}\.\d{{2}}\.\d{{2}})\s+"
+        rf"(?P<body>.+{_EDU_KIND}\[[^\]]+\])\s*$"
+    )
+    section_start_like = re.compile(
+        r"^(?:\d{4}\.\d{2}\.\d{2}\s*~\s*\d{4}\.\d{2}\.\d{2}\b|"
+        r"근무기간|수여일|교육기간|1\.\s*기술경력|2\.\s*건설사업관리|근무처|상훈|교육훈련)"
+    )
+
+    merged_lines: list[str] = []
+    buf_line = ""
+    for raw_line in (combined_text or "").splitlines():
+        line = re.sub(r"[ \t]+", " ", (raw_line or "")).strip()
+        if not line:
+            continue
+        if "졸업일" in line and "학교명" in line and ("학과" in line or "전공" in line) and "학위" in line:
+            continue
+
+        if edu_start_pat.match(line):
+            if buf_line:
+                merged_lines.append(buf_line.strip())
+            buf_line = line
+            continue
+
+        if buf_line:
+            if (not section_start_like.match(line)) and (
+                not re.match(r"^(?:학력\s+)?\d{4}\.\d{2}\.\d{2}\b", line)
+            ):
+                buf_line = (buf_line + " " + line).strip()
+                continue
+            merged_lines.append(buf_line.strip())
+            buf_line = ""
+            if edu_start_pat.match(line):
+                buf_line = line
+            elif re.match(r"^(?:학력\s+)?\d{4}\.\d{2}\.\d{2}\b", line):
+                buf_line = line
+            continue
+
+    if buf_line:
+        merged_lines.append(buf_line.strip())
+
+    edu_line_segments: list[str] = []
+    for line in merged_lines:
+        segs = _split_merged_education_line(line)
+        if len(segs) > 1:
+            edu_line_segments.extend(segs)
+        elif len(segs) == 1:
+            edu_line_segments.append(segs[0])
+        else:
+            t = _strip_leading_hakryeok_label(line)
+            if t != line.strip():
+                t2 = _split_merged_education_line(t)
+                edu_line_segments.extend(t2 if t2 else [t])
+            else:
+                edu_line_segments.append(line.strip())
+
+    for line in edu_line_segments:
+        if not _EDU_BRACKET_FULL.search(line):
+            continue
+        line = _strip_leading_hakryeok_label(line)
+        m_date = re.match(r"^(?P<date>\d{4}\.\d{2}\.\d{2})\s+(?P<rest>.+)$", line)
+        if not m_date:
+            continue
+        date_raw = (m_date.group("date") or "").strip()
+        rest = (m_date.group("rest") or "").strip()
+
+        deg_hits = list(_EDU_BRACKET_FULL.finditer(rest))
+        if not deg_hits:
+            continue
+        last = deg_hits[-1]
+        degree = (last.group("deg") or "").strip()
+        status = (last.group("st") or "").strip()
+        before = rest[: last.start()].strip()
+        after = rest[last.end() :].strip()
+
+        words = [p for p in before.split(" ") if p]
+        if words and words[-1] == "학력":
+            words = words[:-1]
+        if len(words) < 2:
+            continue
+        major_idx = None
+        for _wi, w in enumerate(words):
+            w = w.strip()
+            if any(w.endswith(suf) for suf in ["학과", "전공", "학부", "과"]):
+                if w in {"과정"}:
+                    continue
+                major_idx = _wi
+                break
+
+        if major_idx is None and len(words) >= 3:
+            tail = words[-1].strip()
+            prev = words[-2].strip()
+            if tail in {"전문", "일반", "야간", "주간"} and any(
+                prev.endswith(suf) for suf in ["학과", "전공", "학부", "과"]
+            ):
+                major_idx = len(words) - 2
+
+        if major_idx is None:
+            major = words[-1].strip()
+            school = " ".join(words[:-1]).strip()
+        else:
+            end_i = len(words)
+            while end_i > major_idx:
+                cand = words[end_i - 1].strip()
+                if cand in {"전문", "일반", "야간", "주간"}:
+                    end_i -= 1
+                    continue
+                break
+            major = " ".join(words[major_idx:end_i]).strip()
+            school = " ".join(words[:major_idx]).strip()
+        if after:
+            major = (major + " " + after).strip()
+        major = re.sub(r"\s+학력\s*$", "", (major or "").strip()).strip()
+
+        if not school or not major:
+            continue
+
+        school_full = re.sub(r"\s+", " ", school.replace("：", ":")).strip()
+        prev_school = ""
+        curr_school = school_full
+
+        def _looks_like_school_name(s: str) -> bool:
+            t = re.sub(r"\s+", "", (s or "")).strip()
+            if not t:
+                return False
+            return any(k in t for k in ["대학교", "대학", "전문대학", "고등학교", "중학교", "초등학교", "학교"])
+
+        m_sc = re.search(r"\(\s*(?:現|현)\s*:\s*([^)]+)\)", school_full)
+        if m_sc:
+            curr_school = re.sub(r"\s+", " ", (m_sc.group(1) or "")).strip()
+            prev_school = re.sub(
+                r"\s+",
+                " ",
+                (school_full[: m_sc.start()] + school_full[m_sc.end() :]).strip(),
+            ).strip()
+        else:
+            m_sc2 = re.search(r"\(\s*:\s*([^)]+)\)", school_full)
+            if m_sc2:
+                cand_curr = re.sub(r"\s+", " ", (m_sc2.group(1) or "")).strip()
+                cand_prev = re.sub(
+                    r"\s+",
+                    " ",
+                    (school_full[: m_sc2.start()] + school_full[m_sc2.end() :]).strip(),
+                ).strip()
+                if (
+                    _looks_like_school_name(cand_prev)
+                    and _looks_like_school_name(cand_curr)
+                    and not any(cand_curr.endswith(suf) for suf in ["학과", "전공", "학부", "과"])
+                ):
+                    prev_school, curr_school = cand_prev, cand_curr
+
+        prev_school = re.sub(r"\s+", " ", (prev_school or "")).strip()
+        curr_school = re.sub(r"\s+", " ", (curr_school or "")).strip()
+        if prev_school and not curr_school:
+            curr_school = prev_school
+        if not prev_school and not curr_school:
+            curr_school = school_full
+
+        edu_rows.append(
+            {
+                "졸업일": _yyyy_mm_dd_to_iso(date_raw),
+                "이전_학교명": prev_school,
+                "현재_학교명": curr_school,
+                "학과": major,
+                "학위": degree,
+                "상태": status,
+            }
+        )
+
+    if not edu_rows:
+        return []
+    seen = set()
+    dedup = []
+    for e in edu_rows:
+        key = (
+            e.get("졸업일", ""),
+            e.get("이전_학교명", ""),
+            e.get("현재_학교명", ""),
+            e.get("학과", ""),
+            e.get("학위", ""),
+            e.get("상태", ""),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        dedup.append(e)
+    dedup.sort(key=lambda x: (x.get("졸업일") or ""))
+    return dedup
+
+
+def normalize_cell_text(cell: Any) -> str:
+    if cell is None:
+        return ""
+    s = str(cell).replace("\u00a0", " ").replace("\u200b", "").replace("\ufeff", "")
+    s = re.sub(r"[\t\v\f\r]+", " ", s)
+    s = re.sub(r"\n{3,}", "\n\n", s)
+    return s.strip()
+
+
+def split_multiline_cell(cell: str) -> List[str]:
+    t = normalize_cell_text(cell)
+    if not t:
+        return []
+    return [ln.strip() for ln in t.split("\n") if ln.strip()]
+
+
+def normalize_table_rows(table: List[Any]) -> List[List[str]]:
+    out: List[List[str]] = []
+    for row in table or []:
+        if row is None:
+            continue
+        nr = [normalize_cell_text(c) for c in row]
+        if any(x for x in nr):
+            out.append(nr)
+    return out
+
+
+def merge_broken_rows(rows: List[List[str]]) -> List[List[str]]:
+    """앞열이 비고 마지막 셀만 채워진 행을 이전 행에 이어붙인다."""
+    if not rows:
+        return []
+    out: List[List[str]] = []
+    for row in rows:
+        nonempty = [i for i, c in enumerate(row) if c and c.strip()]
+        if (
+            len(row) >= 2
+            and nonempty == [len(row) - 1]
+            and out
+            and any(out[-1][i].strip() for i in range(len(out[-1])) if i < len(row))
+        ):
+            prev = out[-1]
+            tail = row[-1].strip()
+            if prev:
+                j = len(prev) - 1
+                while j >= 0 and not (prev[j] or "").strip():
+                    j -= 1
+                if j >= 0:
+                    prev[j] = _smart_concat(prev[j], tail)
+                else:
+                    prev[-1] = tail
+            continue
+        out.append(list(row))
+    return out
+
+
+def _row_join_for_detection(row: List[str]) -> str:
+    return " ".join((c or "").replace("\n", " ").strip() for c in row if c is not None)
+
+
+def _score_page1_table(table: List[Any]) -> Tuple[int, int]:
+    if not table:
+        return (0, 0)
+    keys = (
+        "인적사항",
+        "성명",
+        "등급",
+        "국가기술자격",
+        "학력",
+        "졸업일",
+        "교육훈련",
+        "교육기간",
+        "상훈",
+        "수여일",
+        "벌점",
+        "제재",
+        "근무처",
+        "근무기간",
+        "상호",
+    )
+    hits = 0
+    for row in table[:120]:
+        rt = _row_join_for_detection([normalize_cell_text(c) for c in (row or [])])
+        hits += sum(1 for k in keys if k in rt)
+    return (hits, len(table))
+
+
+def _raw_tables_from_page(page: Any) -> List[List[Any]]:
+    tables = safe_extract_tables(page, PAGE1_LINE_TABLE_SETTINGS) or []
+    if not tables:
+        tables = safe_extract_tables(page, PAGE1_LINE_TABLE_SETTINGS_ALT) or []
+    if not tables:
+        tables = extract_tables_merged(page) or []
+    return tables
+
+
+def _extract_page1_normalized_rows_for_page(page: Any) -> List[List[str]]:
+    raw = _raw_tables_from_page(page)
+    if not raw:
+        return []
+    best = pick_best_table(raw, _score_page1_table)
+    if best:
+        return merge_broken_rows(normalize_table_rows(best))
+    acc: List[List[str]] = []
+    for tbl in raw:
+        acc.extend(merge_broken_rows(normalize_table_rows(tbl)))
+    return acc
+
+
+def detect_section_ranges(rows: List[List[str]]) -> Dict[str, List[List[str]]]:
+    buckets: Dict[str, List[List[str]]] = {
+        "personal": [],
+        "grade": [],
+        "license": [],
+        "education": [],
+        "training": [],
+        "award": [],
+        "penalty": [],
+        "workplace": [],
+        "_unassigned": [],
+    }
+    current = "leading"
+    leading_buf: List[List[str]] = []
+
+    def _transition(line: str) -> Optional[str]:
+        if "1. 기술경력" in line or "1.기술경력" in line:
+            return "__stop__"
+        if "근무기간" in line and "상호" in line:
+            return "workplace"
+        if ("벌점" in line or "제재일" in line) and ("제재" in line or "제재사항" in line or "종류" in line):
+            return "penalty"
+        if "상훈" in line and ("수여일" in line or "종류" in line or "근거" in line):
+            return "award"
+        if "교육기간" in line and "과정명" in line:
+            return "training"
+        if "졸업일" in line and "학교명" in line and ("학과" in line or "전공" in line):
+            return "education"
+        if "국가기술자격" in line and ("종목" in line or "합격" in line or "등록" in line):
+            return "license"
+        if "등급" in line and len(line) <= 40:
+            return "grade"
+        if "설계·시공" in line or "설계시공" in line or "건설사업관리" in line:
+            if "기술경력" not in line:
+                return "grade"
+        if "인적사항" in line or "성명(한글)" in line or "관리번호" in line:
+            return "personal"
+        if "품질관리" in line and ("등급" in line or "특급" in line or "고급" in line):
+            return "grade"
+        return None
+
+    for row in rows:
+        line = _row_join_for_detection(row)
+        new_sec = _transition(line)
+        if new_sec == "__stop__":
+            break
+        if new_sec:
+            current = new_sec
+        if current == "leading":
+            leading_buf.append(row)
+            continue
+        if current == "personal" and leading_buf:
+            buckets["personal"].extend(leading_buf)
+            leading_buf = []
+        tgt = current if current != "leading" else "personal"
+        if tgt in buckets:
+            buckets[tgt].append(row)
+        else:
+            buckets["_unassigned"].append(row)
+
+    if leading_buf:
+        buckets["personal"].extend(leading_buf)
+    return buckets
+
+
+def classify_unassigned_rows(
+    buckets: Dict[str, List[List[str]]],
+) -> None:
+    """미분류 행을 휴리스틱으로 인접 섹션에 붙인다(보수적으로)."""
+    raw = buckets.get("_unassigned") or []
+    if not raw:
+        return
+    still: List[List[str]] = []
+    for row in raw:
+        line = _row_join_for_detection(row)
+        if re.search(r"\d{4}\.\d{2}\.\d{2}\s*~\s*\d{4}\.\d{2}\.\d{2}", line):
+            buckets["training"].append(row)
+        elif re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", line.strip()):
+            buckets["award"].append(row)
+        elif "기사" in line or "산업기사" in line or "기능사" in line or "기술사" in line:
+            buckets["license"].append(row)
+        else:
+            still.append(row)
+    buckets["_unassigned"] = still
+
+
+def _rows_to_multiline_text(rows: List[List[str]]) -> str:
+    lines: List[str] = []
+    for row in rows:
+        parts = [normalize_cell_text(c) for c in row if normalize_cell_text(c)]
+        if parts:
+            lines.append(" ".join(parts))
+    return "\n".join(lines)
+
+
+def parse_personal_info_from_table(rows: List[List[str]]) -> Dict[str, Any]:
+    text_normalized = re.sub(r"\s+", " ", _rows_to_multiline_text(rows))
+    out = {"인적사항": {"성명": "", "생년월일": "", "주소": "", "관리번호": ""}, "서류출력일자": ""}
+    mgmt_num_match = re.search(
+        r"관리번호\s*(?:[:：\s]*)(#\s*(?:\d\s*)+|\d(?:\s*\d)*)",
+        text_normalized,
+    )
+    if mgmt_num_match:
+        out["인적사항"]["관리번호"] = mgmt_num_match.group(1).replace(" ", "")
+    else:
+        mgmt_num_match_alt = re.search(r"(#\s*(?:\d\s*)+)", text_normalized[:500])
+        if mgmt_num_match_alt:
+            out["인적사항"]["관리번호"] = mgmt_num_match_alt.group(1).replace(" ", "")
+    name_kor_match = re.search(r"성명\(한글\)\s+(\S+)", text_normalized)
+    if name_kor_match:
+        out["인적사항"]["성명"] = name_kor_match.group(1).strip()
+    birth_match = re.search(r"생년월일\s+(\d{2}\.\d{2}\.\d{2})", text_normalized)
+    if birth_match:
+        out["인적사항"]["생년월일"] = _yy_mm_dd_to_iso(birth_match.group(1).strip())
+    issue_match = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", text_normalized)
+    if issue_match:
+        yyyy, mm, dd = map(int, issue_match.groups())
+        try:
+            out["서류출력일자"] = datetime(yyyy, mm, dd).strftime("%Y-%m-%d")
+        except ValueError:
+            out["서류출력일자"] = ""
+    addr_match = re.search(
+        r"주소\s+(.+?)(?=\s+(?:"
+        r"설계·시공|설계시공|"
+        r"건설사업관리|"
+        r"품질관리|"
+        r"연락처|전화번호|전화|휴대전화|휴대|전자우편|이메일|"
+        r"등급|국가기술자격|학력|교육훈련|상훈|벌점|제재|근무처"
+        r")|$)",
+        text_normalized,
+    )
+    if addr_match:
+        out["인적사항"]["주소"] = addr_match.group(1).strip()
+    return out
+
+
+def parse_grade_from_table(rows: List[List[str]]) -> Dict[str, Any]:
+    tn = re.sub(r"\s+", " ", _rows_to_multiline_text(rows))
+    return {"등급": _parse_grade_dict_from_normalized_text(tn)}
+
+
+def parse_qualifications_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
+    raw = _rows_to_multiline_text(rows)
+    section = _extract_license_section_text(re.sub(r"[ \t]+", " ", raw))
+    if not section:
+        section = raw
+    lic_row_pat = re.compile(
+        r"(?P<name>[가-힣A-Za-z0-9·ㆍ\(\)\-/ ]+?(?:기사|산업기사|기능사|기술사|기능장))\s+"
+        r"(?P<date>\d{4}\.\d{2}\.\d{2})"
+        r"(?:\s+(?P<reg>[A-Z0-9\-]{4,}|\d{4,}|\S+))?",
+        flags=re.MULTILINE,
+    )
+    out: List[Dict[str, Any]] = []
+    for m in lic_row_pat.finditer(section):
+        name = (m.group("name") or "").strip()
+        date_raw = (m.group("date") or "").strip()
+        reg = (m.group("reg") or "").strip()
+        if not name or not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", date_raw):
+            continue
+        out.append(
+            {
+                "종목": name,
+                "합격일": _yyyy_mm_dd_to_iso(date_raw),
+                "등록번호": reg,
+            }
+        )
+    return out
+
+
+def parse_education_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
+    return _parse_education_from_combined_text(_rows_to_multiline_text(rows))
+
+
+def parse_training_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
+    chunk = _rows_to_multiline_text(rows)
+    out: List[Dict[str, Any]] = []
+    for row in _extract_training_rows_from_text(chunk + "\n"):
+        p = _parse_training_row(row)
+        if p:
+            out.append(p)
+    return out
+
+
+def parse_awards_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
+    """표만으로 상훈이 애매하면 빈 리스트 — 상위에서 parse_award_info 폴백."""
+    if rows and any("수여일" in _row_join_for_detection(r) for r in rows):
+        # TODO: 표 전용 상훈 레코드 매핑(수여일/종류/근거) — 현재는 폴백에 맡김
+        pass
+    return []
+
+
+def parse_penalties_from_table(rows: List[List[str]]) -> Dict[str, Any]:
+    """표 텍스트에서 벌점/제재 토큰을 보수적으로 수집(상세는 section_parsers 폴백)."""
+    text = _rows_to_multiline_text(rows)
+    base: Dict[str, Any] = {"벌점": "해당없음", "제재사항": "해당없음"}
+    if not text.strip():
+        return base
+    m_pts = re.search(r"벌점\s*[:：]?\s*([\d.]+)\s*점?", text.replace("\n", " "))
+    if m_pts:
+        base["벌점"] = m_pts.group(1).strip()
+    if "해당없음" in text and "제재" in text:
+        return base
+    if re.search(r"제재일\s*\d{4}\.\d{2}\.\d{2}", text):
+        base["제재사항"] = text.replace("\n", " ").strip()
+    return base
+
+
+def parse_workplaces_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
+    body_lines: List[str] = []
+    for row in rows:
+        ln = " ".join(normalize_cell_text(c) for c in row if normalize_cell_text(c)).strip()
+        if ln:
+            body_lines.append(ln)
+    out: List[Dict[str, Any]] = []
+    for w in _parse_workplace_body_lines_single(body_lines):
+        out.append(w)
+    for w in _parse_workplace_body_lines(body_lines):
+        out.append(w)
+    return out
+
+
+def map_rows_to_existing_schema(flat_rows: List[List[str]]) -> Dict[str, Any]:
+    """표 행 전체 → page1 JSON 부분 dict."""
+    buckets = detect_section_ranges(flat_rows)
+    classify_unassigned_rows(buckets)
+    try:
+        if buckets.get("_unassigned"):
+            _page1_agent_log(
+                run_id="page1-table",
+                hypothesis_id="U",
+                location="page_1_parser.py:map_rows_to_existing_schema",
+                message="unassigned table rows after classify",
+                data={"n": len(buckets["_unassigned"]), "sample": buckets["_unassigned"][:5]},
+            )
+    except Exception:
+        pass
+
+    personal = parse_personal_info_from_table(buckets.get("personal") or [])
+    grade = parse_grade_from_table(buckets.get("grade") or [])
+    lic = parse_qualifications_from_table(buckets.get("license") or [])
+    edu = parse_education_from_table(buckets.get("education") or [])
+    trn = parse_training_from_table(buckets.get("training") or [])
+    aw = parse_awards_from_table(buckets.get("award") or [])
+    pen = parse_penalties_from_table(buckets.get("penalty") or [])
+    wp = parse_workplaces_from_table(buckets.get("workplace") or [])
+
+    merged: Dict[str, Any] = {
+        "인적사항": personal.get("인적사항") or {},
+        "서류출력일자": personal.get("서류출력일자") or "",
+        "등급": grade.get("등급") or {},
+        "국가기술자격": lic,
+        "학력": edu,
+        "교육훈련": trn,
+        "상훈": aw,
+        "벌점및제재사항": pen,
+        "근무처": wp,
+    }
+    return merged
+
+
+def _fresh_page1_result() -> Dict[str, Any]:
+    return {
+        "인적사항": {"성명": "", "생년월일": "", "주소": "", "관리번호": ""},
+        "서류출력일자": "",
+        "등급": {
+            "설계시공_등_직무분야": "",
+            "설계시공_등_직무분야_등급": "",
+            "설계시공_등_전문분야": "",
+            "설계시공_등_전문분야_등급": "",
+            "건설사업관리_직무분야": "",
+            "건설사업관리_직무분야_등급": "",
+            "건설사업관리_전문분야": "",
+            "건설사업관리_전문분야_등급": "",
+            "품질관리_등급": "",
+        },
+        "국가기술자격": [],
+        "학력": [],
+        "교육훈련": [],
+        "상훈": [],
+        "벌점및제재사항": {"벌점": "해당없음", "제재사항": "해당없음"},
+        "근무처": [],
+    }
+
+
+def _personal_is_empty(d: Dict[str, Any]) -> bool:
+    p = d.get("인적사항") or {}
+    return not any(str(p.get(k) or "").strip() for k in ("성명", "생년월일", "주소", "관리번호"))
+
+
+def _grade_is_empty(d: Dict[str, Any]) -> bool:
+    g = d.get("등급") or {}
+    if not isinstance(g, dict):
+        return True
+    return not any(str(v or "").strip() for v in g.values())
+
+
+def _merge_page1_table_first_then_text(table_part: Dict[str, Any], text_part: Dict[str, Any]) -> Dict[str, Any]:
+    out = _fresh_page1_result()
+
+    tp = table_part.get("인적사항") or {}
+    ep = text_part.get("인적사항") or {}
+    out["인적사항"] = {
+        "성명": (tp.get("성명") or ep.get("성명") or "").strip(),
+        "생년월일": (tp.get("생년월일") or ep.get("생년월일") or "").strip(),
+        "주소": (tp.get("주소") or ep.get("주소") or "").strip(),
+        "관리번호": (tp.get("관리번호") or ep.get("관리번호") or "").strip(),
+    }
+    if _personal_is_empty({"인적사항": out["인적사항"]}) and not _personal_is_empty(text_part):
+        out["인적사항"] = dict(ep)
+
+    out["서류출력일자"] = (table_part.get("서류출력일자") or text_part.get("서류출력일자") or "").strip()
+
+    tg = table_part.get("등급") or {}
+    eg = text_part.get("등급") or {}
+    if isinstance(tg, dict) and not _grade_is_empty({"등급": tg}):
+        merged_g = dict(tg)
+        if isinstance(eg, dict):
+            for k, v in eg.items():
+                if not str(merged_g.get(k) or "").strip() and str(v or "").strip():
+                    merged_g[k] = v
+        out["등급"] = merged_g
+    else:
+        out["등급"] = dict(eg) if isinstance(eg, dict) else out["등급"]
+
+    def _uniq_license(rows: List[Any]) -> List[Dict[str, Any]]:
+        seen: set[tuple[str, str, str]] = set()
+        acc: List[Dict[str, Any]] = []
+        for r in rows or []:
+            if not isinstance(r, dict):
+                continue
+            k = (
+                str(r.get("종목") or ""),
+                str(r.get("합격일") or ""),
+                str(r.get("등록번호") or ""),
+            )
+            if k in seen:
+                continue
+            if any(k):
+                seen.add(k)
+                acc.append(r)
+        return acc
+
+    out["국가기술자격"] = _uniq_license((table_part.get("국가기술자격") or []) + (text_part.get("국가기술자격") or []))
+
+    def _edu_key(e: Any) -> tuple:
+        if not isinstance(e, dict):
+            return tuple()
+        return (
+            str(e.get("졸업일") or ""),
+            str(e.get("이전_학교명") or ""),
+            str(e.get("현재_학교명") or ""),
+            str(e.get("학과") or ""),
+            str(e.get("학위") or ""),
+            str(e.get("상태") or ""),
+        )
+
+    edus: Dict[tuple, Dict[str, Any]] = {}
+    for e in (table_part.get("학력") or []) + (text_part.get("학력") or []):
+        k = _edu_key(e)
+        if k and k not in edus:
+            edus[k] = e if isinstance(e, dict) else {}
+    out["학력"] = sorted(edus.values(), key=lambda x: (x.get("졸업일") or ""))
+
+    def _tr_key(t: Any) -> tuple:
+        if not isinstance(t, dict):
+            return tuple()
+        return (
+            str(t.get("교육기간_시작") or ""),
+            str(t.get("교육기간_종료") or ""),
+            str(t.get("과정명") or ""),
+            str(t.get("교육기관명") or ""),
+        )
+
+    trs: Dict[tuple, Dict[str, Any]] = {}
+    for t in (table_part.get("교육훈련") or []) + (text_part.get("교육훈련") or []):
+        k = _tr_key(t)
+        if k and k not in trs:
+            trs[k] = t if isinstance(t, dict) else {}
+    out["교육훈련"] = list(trs.values())
+
+    out["상훈"] = (table_part.get("상훈") or text_part.get("상훈") or [])[:]
+    if not out["상훈"]:
+        out["상훈"] = text_part.get("상훈") or []
+
+    tpen = table_part.get("벌점및제재사항") or {}
+    epen = text_part.get("벌점및제재사항") or {}
+    out["벌점및제재사항"] = {"벌점": "해당없음", "제재사항": "해당없음"}
+    if isinstance(tpen, dict):
+        tb = str(tpen.get("벌점") or "").strip()
+        if tb and tb != "해당없음":
+            out["벌점및제재사항"]["벌점"] = tpen.get("벌점")
+        tj = tpen.get("제재사항")
+        if isinstance(tj, list) and tj:
+            out["벌점및제재사항"]["제재사항"] = tj
+        elif str(tj or "").strip() and str(tj).strip() != "해당없음":
+            out["벌점및제재사항"]["제재사항"] = tj
+    if isinstance(epen, dict):
+        if str(out["벌점및제재사항"].get("벌점") or "") in ("", "해당없음"):
+            eb = str(epen.get("벌점") or "").strip()
+            if eb:
+                out["벌점및제재사항"]["벌점"] = epen.get("벌점")
+        ej = epen.get("제재사항")
+        if out["벌점및제재사항"].get("제재사항") in ("", "해당없음", None):
+            if isinstance(ej, list) and ej:
+                out["벌점및제재사항"]["제재사항"] = ej
+            elif str(ej or "").strip() and str(ej).strip() != "해당없음":
+                out["벌점및제재사항"]["제재사항"] = ej
+
+    def _wp_key(w: Any) -> tuple:
+        if not isinstance(w, dict):
+            return tuple()
+        return (
+            str(w.get("근무기간_시작") or ""),
+            str(w.get("근무기간_종료") or ""),
+            str(w.get("이전_상호명") or ""),
+            str(w.get("현재_상호명") or ""),
+        )
+
+    wps: Dict[tuple, Dict[str, Any]] = {}
+    for w in (table_part.get("근무처") or []) + (text_part.get("근무처") or []):
+        k = _wp_key(w)
+        if not any(k):
+            continue
+        if k not in wps:
+            wps[k] = w if isinstance(w, dict) else {}
+    out["근무처"] = sorted(wps.values(), key=lambda x: (x.get("근무기간_시작") or ""))
+    return out
+
+
+def _collect_page1_flat_table_rows(ctx: DocumentContext, page_indices: List[int]) -> List[List[str]]:
+    acc: List[List[str]] = []
+    for idx in page_indices:
+        page = ctx.get_page(idx)
+        if page is None:
+            continue
+        acc.extend(_extract_page1_normalized_rows_for_page(page))
+    return acc
+
+
+def _finalize_workplace_list(wp_in: List[Any]) -> List[Dict[str, Any]]:
+    """근무처 중복 제거·상호 보정·경계 병합(parse_page_1_from_text와 동일)."""
+    wp_seen: set[tuple[str, str, str, str]] = set()
+    wp_dedup: list[dict] = []
+    for w in wp_in or []:
+        if not isinstance(w, dict):
+            continue
+        k = (
+            str(w.get("근무기간_시작") or ""),
+            str(w.get("근무기간_종료") or ""),
+            str(w.get("이전_상호명") or ""),
+            str(w.get("현재_상호명") or ""),
+        )
+        if k in wp_seen:
+            continue
+        wp_seen.add(k)
+        wp_dedup.append(w)
+
+    for w in wp_dedup:
+        cur = str(w.get("현재_상호명") or "").strip()
+        if not cur:
+            continue
+        if re.search(r"\b\d{4}\.\d{2}\.\d{2}\s*[:：]\s*", cur):
+            p, c = _normalize_company(cur)
+            if c and c != cur:
+                if not str(w.get("이전_상호명") or "").strip():
+                    w["이전_상호명"] = p
+                w["현재_상호명"] = c
+
+    for i in range(1, len(wp_dedup)):
+        prev = wp_dedup[i - 1]
+        nxt = wp_dedup[i]
+        if not isinstance(prev, dict) or not isinstance(nxt, dict):
+            continue
+        prev_end = str(prev.get("근무기간_종료") or "").strip()
+        nxt_start = str(nxt.get("근무기간_시작") or "").strip()
+        if not prev_end or not nxt_start or prev_end != nxt_start:
+            continue
+        prev_prev = str(prev.get("이전_상호명") or "").strip()
+        prev_curr = str(prev.get("현재_상호명") or "").strip()
+        nxt_prev = str(nxt.get("이전_상호명") or "").strip()
+        nxt_curr = str(nxt.get("현재_상호명") or "").strip()
+        if prev_prev:
+            continue
+        if not prev_curr or not nxt_prev or not nxt_curr:
+            continue
+        if (":" in nxt_prev) or ("：" in nxt_prev):
+            continue
+        prev["이전_상호명"] = prev_curr
+        prev["현재_상호명"] = nxt_prev
+    wp_dedup.sort(key=lambda x: (x.get("근무기간_시작") or ""))
+    return wp_dedup
+
+
 def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
     """
     제1-3쪽 텍스트 통합 파싱: 인적사항, 등급, 국가기술자격, 학력, 교육훈련, 상훈, 벌점 및 제재사항, 근무처
@@ -1220,139 +2159,13 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
         )
         if addr_match:
             result['인적사항']['주소'] = addr_match.group(1).strip()
-        
-        # 등급 파싱 (9개 항목 구조)
-        # 패턴: 토목 고급 ** 해당없음 ** 토목 특급 ** 생략 **
-        grade_line_pattern = r'([\w가-힣]*)\s+(고급|중급|초급|특급|고급기술자|중급기술자|초급기술자|기술자|특급기술인|고급기술인)?\s*\*\*\s*(해당없음|생략|[\w가-힣]*)\s*\*\*\s*([\w가-힣]*)\s+(고급|중급|초급|특급|고급기술자|중급기술자|초급기술자|기술자|특급기술인|고급기술인)?\s*\*\*\s*(해당없음|생략|[\w가-힣]*)\s*\*\*'
-        
-        # 기본값으로 빈 문자열 초기화
-        result['등급'] = {
-            '설계시공_등_직무분야': '',
-            '설계시공_등_직무분야_등급': '',
-            '설계시공_등_전문분야': '',
-            '설계시공_등_전문분야_등급': '',
-            '건설사업관리_직무분야': '',
-            '건설사업관리_직무분야_등급': '',
-            '건설사업관리_전문분야': '',
-            '건설사업관리_전문분야_등급': '',
-            '품질관리_등급': ''
-        }
-        
-        # 간단한 패턴으로 추출 시도
-        simple_pattern = r'([\w가-힣]+)\s+(고급|중급|초급|특급)\s+\*\*\s*해당없음\s*\*\*\s+([\w가-힣]+)\s+(고급|중급|초급|특급)'
-        match = re.search(simple_pattern, text_normalized)
-        
-        if match:
-            # 설계시공 등
-            result['등급']['설계시공_등_직무분야'] = match.group(1)
-            result['등급']['설계시공_등_직무분야_등급'] = match.group(2)
-            result['등급']['설계시공_등_전문분야'] = ''
-            result['등급']['설계시공_등_전문분야_등급'] = ''
-            
-            # 건설사업관리
-            result['등급']['건설사업관리_직무분야'] = match.group(3)
-            result['등급']['건설사업관리_직무분야_등급'] = match.group(4)
-            result['등급']['건설사업관리_전문분야'] = ''
-            result['등급']['건설사업관리_전문분야_등급'] = ''
 
-        # 카탈로그 기반 폴백: '**' 구분자가 없는 문서에서도 '직무분야/전문분야 + 등급' 토큰을 복원한다.
-        # - data/field_catalog.json을 우선 사용(없으면 xlsx/기본 폴백)
-        try:
-            if not match:
-                from field_catalog import get_field_catalog, best_match_specialty  # lazy import (순환/부하 회피)
-
-                catalog = get_field_catalog(project_root=os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-                grade_tokens_pat = r"(특급|고급|중급|초급)"
-
-                def _cut(src: str, start_kw: str, end_kws: list[str]) -> str:
-                    if not src:
-                        return ""
-                    sidx = src.find(start_kw)
-                    if sidx < 0:
-                        return ""
-                    sub = src[sidx + len(start_kw) :]
-                    epos = None
-                    for ek in end_kws:
-                        j = sub.find(ek)
-                        if j >= 0:
-                            epos = j if epos is None else min(epos, j)
-                    return sub[:epos] if epos is not None else sub
-
-                # 설계·시공 등 / 건설사업관리 블록을 나눠서 각각에서 직무/전문/등급 추출
-                design_block = _cut(text_normalized, "설계·시공 등", ["건설사업관리", "품질관리"])
-                cm_block = _cut(
-                    text_normalized,
-                    "건설사업관리",
-                    ["품질관리", "국가기술자격", "학력", "교육훈련", "상훈", "벌점", "근무처", "1. 기술경력"],
-                )
-
-                def _pick_job_and_grade(block: str) -> tuple[str, str]:
-                    for jf in catalog.job_fields:
-                        # [수정] rf"...\\s*..." 는 실제 정규식이 `\\\\s*` 가 되어 공백을 매칭하지 못함
-                        m = re.search(rf"{re.escape(jf)}\s*{grade_tokens_pat}", block or "")
-                        if m:
-                            return jf, m.group(1)
-                    return "", ""
-
-                def _pick_specialty_and_grade(block: str) -> tuple[str, str]:
-                    # 전문분야는 긴 문자열 우선(오탐 방지)
-                    for sp in sorted(catalog.all_specialties, key=len, reverse=True):
-                        if not sp:
-                            continue
-                        m = re.search(rf"{re.escape(sp)}\s*{grade_tokens_pat}", block or "")
-                        if m:
-                            return sp, m.group(1)
-                    sp2 = best_match_specialty(block or "", catalog)
-                    if sp2:
-                        m2 = re.search(rf"{re.escape(sp2)}\s*{grade_tokens_pat}", block or "")
-                        if m2:
-                            return sp2, m2.group(1)
-                    return "", ""
-
-                jf, jg = _pick_job_and_grade(design_block)
-                sp, sg = _pick_specialty_and_grade(design_block)
-                if jf and jg:
-                    result["등급"]["설계시공_등_직무분야"] = jf
-                    result["등급"]["설계시공_등_직무분야_등급"] = jg
-                if sp and sg:
-                    result["등급"]["설계시공_등_전문분야"] = sp
-                    result["등급"]["설계시공_등_전문분야_등급"] = sg
-
-                jf, jg = _pick_job_and_grade(cm_block)
-                sp, sg = _pick_specialty_and_grade(cm_block)
-                if jf and jg:
-                    result["등급"]["건설사업관리_직무분야"] = jf
-                    result["등급"]["건설사업관리_직무분야_등급"] = jg
-                if sp and sg:
-                    result["등급"]["건설사업관리_전문분야"] = sp
-                    result["등급"]["건설사업관리_전문분야_등급"] = sg
-
-                # 품질관리 등급(등급 토큰만 있어도 채움)
-                m_q = re.search(rf"품질관리\s*{grade_tokens_pat}", text_normalized)
-                if m_q:
-                    result["등급"]["품질관리_등급"] = m_q.group(1)
-        except Exception:
-            pass
+        result["등급"] = _parse_grade_dict_from_normalized_text(text_normalized)
         
         # 국가기술자격 파싱 (텍스트 폴백: 표 추출 실패 케이스 대응)
         # - 기존 코드는 '토목기사' 하드코딩이라 대부분 누락됨
         # - "국가기술자격" 섹션을 잘라서 (종목, 합격일, 등록번호) 패턴을 반복 추출
-        def _extract_license_section(raw: str) -> str:
-            if not raw:
-                return ""
-            # 줄바꿈은 유지하되 과도한 공백만 축약
-            t = re.sub(r"[ \t]+", " ", raw)
-            # 섹션 컷: 국가기술자격 ~ 다음 섹션 전까지
-            m = re.search(
-                # 주의: re.MULTILINE에서 `$`는 "라인 끝"도 매칭하므로 섹션이 헤더 한 줄로 잘릴 수 있다.
-                # 따라서 문자열 끝은 `\\Z`로 고정한다.
-                r"(국가기술자격[\s\S]*?)(?=\n\s*(?:학력|교육훈련|상훈|벌점|제재사항|근무처)\b|\Z)",
-                t,
-                flags=0,
-            )
-            return (m.group(1) if m else "")
-
-        license_section = _extract_license_section(combined_text)
+        license_section = _extract_license_section_text(combined_text)
         if license_section:
             # 등록번호는 문서/기관에 따라 형식이 다양해서 공백 전까지 토큰으로 수집(없을 수도 있음)
             # 종목명은 '...기사/산업기사/기능사/기술사'로 끝나는 문자열로 잡는다.
@@ -1376,233 +2189,7 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
                     }
                 )
         
-        # 학력 파싱(멀티라인 전공 병합)
-        # 원본 PDF 텍스트 추출은 대개:
-        #   YYYY.MM.DD <학교명> <학과/전공...> <학위>[상태]
-        # 형태이며, 학과/전공의 괄호가 다음 줄로 떨어질 수 있다(예: '전공)' 단독 라인).
-        edu_rows: list[dict] = []
-
-        # // [수정] edu_start_pat: 대졸[졸업] 등 _EDU_KIND와 동일한 꼬리 조건 사용
-        edu_start_pat = re.compile(
-            rf"^(?:학력\s+)?(?P<date>\d{{4}}\.\d{{2}}\.\d{{2}})\s+"
-            rf"(?P<body>.+{_EDU_KIND}\[[^\]]+\])\s*$"
-        )
-        section_start_like = re.compile(
-            r"^(?:\d{4}\.\d{2}\.\d{2}\s*~\s*\d{4}\.\d{2}\.\d{2}\b|"
-            r"근무기간|수여일|교육기간|1\.\s*기술경력|2\.\s*건설사업관리|근무처|상훈|교육훈련)"
-        )
-
-        merged_lines: list[str] = []
-        buf_line = ""
-        for raw_line in (combined_text or "").splitlines():
-            line = re.sub(r"[ \t]+", " ", (raw_line or "")).strip()
-            if not line:
-                continue
-            # 헤더 라인 스킵
-            if "졸업일" in line and "학교명" in line and ("학과" in line or "전공" in line) and "학위" in line:
-                continue
-
-            if edu_start_pat.match(line):
-                if buf_line:
-                    merged_lines.append(buf_line.strip())
-                buf_line = line
-                continue
-
-            if buf_line:
-                # continuation 후보:
-                # - 새 학력/교육훈련/상훈/근무처/기술경력 시작이 아니고
-                # - 날짜(졸업일)로 새로 시작하지 않으면
-                # 직전 학력 라인에 이어붙인다.
-                # FIX: '학력 YYYY.MM.DD …' 는 새 학력 행이므로 병합하지 않고 버퍼를 비운 뒤
-                #      다음 루프에서 edu_start_pat에 걸리게 한다.
-                if (not section_start_like.match(line)) and (
-                    not re.match(r"^(?:학력\s+)?\d{4}\.\d{2}\.\d{2}\b", line)
-                ):
-                    buf_line = (buf_line + " " + line).strip()
-                    continue
-                merged_lines.append(buf_line.strip())
-                buf_line = ""
-                # 완결 학력 줄 또는 '날짜만 먼저 나오고 학위는 다음 줄'인 새 블록 시작
-                if edu_start_pat.match(line):
-                    buf_line = line
-                elif re.match(r"^(?:학력\s+)?\d{4}\.\d{2}\.\d{2}\b", line):
-                    buf_line = line
-                continue
-
-        if buf_line:
-            merged_lines.append(buf_line.strip())
-
-        # 복수 학력이 한 덩어리로 붙은 경우 분리 + 정규화 줄 목록
-        edu_line_segments: list[str] = []
-        for line in merged_lines:
-            segs = _split_merged_education_line(line)
-            if len(segs) > 1:
-                edu_line_segments.extend(segs)
-            elif len(segs) == 1:
-                edu_line_segments.append(segs[0])
-            else:
-                # 분리 실패 시 기존 한 줄 시도(라벨만 제거)
-                t = _strip_leading_hakryeok_label(line)
-                if t != line.strip():
-                    t2 = _split_merged_education_line(t)
-                    edu_line_segments.extend(t2 if t2 else [t])
-                else:
-                    edu_line_segments.append(line.strip())
-
-        for line in edu_line_segments:
-            # // [수정] 빠른 필터: 고정 토큰 나열 대신 공문서 공통 '학력구분[상태]' 존재 여부
-            if not _EDU_BRACKET_FULL.search(line):
-                continue
-            line = _strip_leading_hakryeok_label(line)
-            # 패턴이 변형되어도(전공 ')'이 뒤로 붙는 등) 마지막 학위[상태] 토큰을 기준으로 분리한다.
-            m_date = re.match(r"^(?P<date>\d{4}\.\d{2}\.\d{2})\s+(?P<rest>.+)$", line)
-            if not m_date:
-                continue
-            date_raw = (m_date.group("date") or "").strip()
-            rest = (m_date.group("rest") or "").strip()
-
-            deg_hits = list(_EDU_BRACKET_FULL.finditer(rest))
-            if not deg_hits:
-                continue
-            last = deg_hits[-1]
-            degree = (last.group("deg") or "").strip()
-            status = (last.group("st") or "").strip()
-            before = rest[: last.start()].strip()
-            after = rest[last.end() :].strip()
-
-            # 학교명에 괄호·공백이 섞이면 첫 토큰만 학교로 보면 깨짐
-            # (예: "경상대학교( :경상국립대학교) 토목공학과" → 학교=앞부분 전체, 학과=마지막 토큰)
-            words = [p for p in before.split(" ") if p]
-            # 헤더 단어 '학력'이 학과 뒤에 토큰으로 붙는 경우
-            if words and words[-1] == "학력":
-                words = words[:-1]
-            if len(words) < 2:
-                continue
-            # 학과는 보통 '...과/학과/전공/학부' 형태의 토큰으로 나타난다.
-            # pdf 텍스트 추출이 '전문' 같은 학력구분 토큰을 별도 단어로 붙이는 경우가 있어
-            # 단순 "마지막 토큰" 규칙은 오탐이 많다 → 학과 후보를 우선 탐색한다.
-            # // [수정] 학부+전공 등 복수 토큰 학과에서 오른쪽 토큰만 잡으면
-            #   '농업시스템공학부 농공학전공' → 학과=농공학전공, 학교 꼬리에 학부가 남아
-            #   '(現:…)' 분리 후 이전 학교명에 학부까지 붙는 오류가 난다. 첫 학과형 토큰부터 학과 블록으로 본다.
-            major_idx = None
-            for wi, w in enumerate(words):
-                w = w.strip()
-                if any(w.endswith(suf) for suf in ["학과", "전공", "학부", "과"]):
-                    if w in {"과정"}:
-                        continue
-                    major_idx = wi
-                    break
-
-            # 학력구분 토큰(예: '전문')이 학과 뒤에 붙는 케이스: 학과는 직전 토큰으로 본다.
-            if major_idx is None and len(words) >= 3:
-                tail = words[-1].strip()
-                prev = words[-2].strip()
-                if tail in {"전문", "일반", "야간", "주간"} and any(
-                    prev.endswith(suf) for suf in ["학과", "전공", "학부", "과"]
-                ):
-                    major_idx = len(words) - 2
-
-            if major_idx is None:
-                major = words[-1].strip()
-                school = " ".join(words[:-1]).strip()
-            else:
-                # // [수정] major_idx 이후는 모두 학과 블록; 끝의 전문/일반 등 학력구분 토큰만 제거
-                end_i = len(words)
-                while end_i > major_idx:
-                    cand = words[end_i - 1].strip()
-                    if cand in {"전문", "일반", "야간", "주간"}:
-                        end_i -= 1
-                        continue
-                    break
-                major = " ".join(words[major_idx:end_i]).strip()
-                school = " ".join(words[:major_idx]).strip()
-            if after:
-                major = (major + " " + after).strip()
-            # 표 헤더 '학력' 이 학과 끝에 붙는 추출 오류 제거
-            major = re.sub(r"\s+학력\s*$", "", (major or "").strip()).strip()
-
-            if not school or not major:
-                continue
-
-            # 학교명 이전/현재 분리:
-            # - 원칙: '(現:...)' 또는 '(현:...)'가 있으면 분리
-            # - 보강: PDF 텍스트 추출에서 '現'이 드롭되어 '( :현재학교명)'처럼 나오는 케이스가 있어
-            #         "학교명 컨텍스트가 충분히 강할 때만" 이를 현 표기로 간주해 분리한다.
-            school_full = re.sub(r"\s+", " ", school.replace("：", ":")).strip()
-            prev_school = ""
-            curr_school = school_full
-
-            def _looks_like_school_name(s: str) -> bool:
-                t = re.sub(r"\s+", "", (s or "")).strip()
-                if not t:
-                    return False
-                # 학교명에 자주 등장하는 단어(보수적으로)
-                return any(k in t for k in ["대학교", "대학", "전문대학", "고등학교", "중학교", "초등학교", "학교"])
-
-            # 1) 명시적 現/현 표기
-            m_sc = re.search(r"\(\s*(?:現|현)\s*:\s*([^)]+)\)", school_full)
-            if m_sc:
-                curr_school = re.sub(r"\s+", " ", (m_sc.group(1) or "")).strip()
-                prev_school = re.sub(
-                    r"\s+", " ",
-                    (school_full[: m_sc.start()] + school_full[m_sc.end() :]).strip(),
-                ).strip()
-            else:
-                # 2) 보강: '( :현재학교명)' (現 드롭) 케이스
-                m_sc2 = re.search(r"\(\s*:\s*([^)]+)\)", school_full)
-                if m_sc2:
-                    cand_curr = re.sub(r"\s+", " ", (m_sc2.group(1) or "")).strip()
-                    cand_prev = re.sub(
-                        r"\s+", " ",
-                        (school_full[: m_sc2.start()] + school_full[m_sc2.end() :]).strip(),
-                    ).strip()
-                    # 오탐 방지:
-                    # - 이전/현재 후보 둘 다 "학교명처럼" 보여야 한다.
-                    # - 이전 후보가 너무 짧거나, 현재 후보가 학과/전공처럼 보이면 제외한다.
-                    if (
-                        _looks_like_school_name(cand_prev)
-                        and _looks_like_school_name(cand_curr)
-                        and not any(cand_curr.endswith(suf) for suf in ["학과", "전공", "학부", "과"])
-                    ):
-                        prev_school, curr_school = cand_prev, cand_curr
-
-            prev_school = re.sub(r"\s+", " ", (prev_school or "")).strip()
-            curr_school = re.sub(r"\s+", " ", (curr_school or "")).strip()
-            if prev_school and not curr_school:
-                curr_school = prev_school
-            if not prev_school and not curr_school:
-                curr_school = school_full
-
-            edu_rows.append(
-                {
-                    "졸업일": _yyyy_mm_dd_to_iso(date_raw),
-                    "이전_학교명": prev_school,
-                    "현재_학교명": curr_school,
-                    "학과": major,
-                    "학위": degree,
-                    "상태": status,
-                }
-            )
-
-        # 중복 제거 + 날짜순 정렬
-        if edu_rows:
-            seen = set()
-            dedup = []
-            for e in edu_rows:
-                key = (
-                    e.get("졸업일", ""),
-                    e.get("이전_학교명", ""),
-                    e.get("현재_학교명", ""),
-                    e.get("학과", ""),
-                    e.get("학위", ""),
-                    e.get("상태", ""),
-                )
-                if key in seen:
-                    continue
-                seen.add(key)
-                dedup.append(e)
-            dedup.sort(key=lambda x: (x.get("졸업일") or ""))
-            result["학력"] = dedup
+        result["학력"] = _parse_education_from_combined_text(combined_text)
         
         # 교육훈련 파싱 (개선: 괄호 + 줄바꿈 완벽 처리)
         training_rows = _extract_training_rows_from_text(combined_text)
@@ -1653,66 +2240,7 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
                 "현재_상호명": current_company or company_name
             })
 
-        # 완전 동일 레코드 제거 후 정렬
-        wp_seen: set[tuple[str, str, str, str]] = set()
-        wp_dedup: list[dict] = []
-        for w in result["근무처"]:
-            k = (
-                str(w.get("근무기간_시작") or ""),
-                str(w.get("근무기간_종료") or ""),
-                str(w.get("이전_상호명") or ""),
-                str(w.get("현재_상호명") or ""),
-            )
-            if k in wp_seen:
-                continue
-            wp_seen.add(k)
-            wp_dedup.append(w)
-
-        # 최종 보정: 일부 추출 경로에서 상호 변경 표기가 '현재_상호명'에 합쳐져 남는 케이스 정리
-        for w in wp_dedup:
-            if not isinstance(w, dict):
-                continue
-            cur = str(w.get("현재_상호명") or "").strip()
-            if not cur:
-                continue
-            if re.search(r"\b\d{4}\.\d{2}\.\d{2}\s*[:：]\s*", cur):
-                p, c = _normalize_company(cur)
-                if c and c != cur:
-                    if not str(w.get("이전_상호명") or "").strip():
-                        w["이전_상호명"] = p
-                    w["현재_상호명"] = c
-
-        # 경계 보정: 다음 근무처의 "이전_상호명"이 직전 근무처의 "현재_상호명 변경 결과"로 쓰이는 케이스
-        # (2열 레이아웃에서 '분할설립/흡수합병/상호변경' 등이 다음 행(다음 기간) 시작쪽에 붙어 내려오는 경우)
-        # 규칙(보수적):
-        # - 직전 레코드: 이전_상호명 비어있고 현재_상호명만 있음
-        # - 다음 레코드: 이전_상호명/현재_상호명 모두 존재
-        # - 다음 시작일 == 직전 종료일
-        # → 직전의 (이전,현재) = (직전 현재, 다음 이전)로 보정
-        for i in range(1, len(wp_dedup)):
-            prev = wp_dedup[i - 1]
-            nxt = wp_dedup[i]
-            if not isinstance(prev, dict) or not isinstance(nxt, dict):
-                continue
-            prev_end = str(prev.get("근무기간_종료") or "").strip()
-            nxt_start = str(nxt.get("근무기간_시작") or "").strip()
-            if not prev_end or not nxt_start or prev_end != nxt_start:
-                continue
-            prev_prev = str(prev.get("이전_상호명") or "").strip()
-            prev_curr = str(prev.get("현재_상호명") or "").strip()
-            nxt_prev = str(nxt.get("이전_상호명") or "").strip()
-            nxt_curr = str(nxt.get("현재_상호명") or "").strip()
-            if prev_prev:
-                continue
-            if not prev_curr or not nxt_prev or not nxt_curr:
-                continue
-            # 다음 이전상호가 '분할설립/흡수합병...' 같은 비회사명 파편이면 제외
-            if (":" in nxt_prev) or ("：" in nxt_prev):
-                continue
-            prev["이전_상호명"] = prev_curr
-            prev["현재_상호명"] = nxt_prev
-        wp_dedup.sort(key=lambda x: (x.get("근무기간_시작") or ""))
-        result["근무처"] = wp_dedup
+        result["근무처"] = _finalize_workplace_list(result["근무처"])
     
     except Exception as e:
         print(f"[ERROR] 제1-3쪽 텍스트 파싱 오류: {e}")
@@ -1765,9 +2293,11 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
         # 교육훈련이 여러 페이지(최대 4페이지 이상)에 걸릴 수 있어,
         # '1. 기술경력' 섹션이 나오기 전까지(또는 상한) 텍스트를 통합한다.
         combined_text = ""
+        page_indices: List[int] = []
         max_scan = min(8, ctx.total_pages)  # 상한: 8페이지까지만 스캔
         for i in range(max_scan):
             text = ctx.get_text(i) or ""
+            page_indices.append(i)
             if text.strip():
                 combined_text += text + "\n"
             if "1. 기술경력" in (text or ""):
@@ -1778,17 +2308,57 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
             return result
         
         print(f"  - 제1-3쪽 통합 파싱 중... (총 텍스트 길이: {len(combined_text)})")
-        result = parse_page_1_from_text(combined_text)
-        print(f"    [OK] 교육훈련: {len(result['교육훈련'])}건")
+        print(
+            f"  - 제1쪽 표 기반 병합 (pdfplumber explicit_vertical_lines "
+            f"X={PAGE1_VIRTUAL_LEFT_X}, X={PAGE1_VIRTUAL_RIGHT_X})..."
+        )
+        flat_rows = _collect_page1_flat_table_rows(ctx, page_indices)
+        table_partial = (
+            map_rows_to_existing_schema(flat_rows) if flat_rows else _fresh_page1_result()
+        )
+        text_result = parse_page_1_from_text(combined_text)
+        result = _merge_page1_table_first_then_text(table_partial, text_result)
+        result["근무처"] = _finalize_workplace_list(result.get("근무처") or [])
+        print(f"    [OK] 교육훈련: {len(result['교육훈련'])}건 (표+텍스트 병합)")
 
         # 폴백(일반 규칙, 하드코딩 금지):
-        # - 텍스트 기반 파싱은 PDF 추출 편차에 취약하므로,
-        #   등급/국가기술자격은 "부분 누락"이 있어도 표/좌표 기반 파서로 보강한다.
-        #   (예: 설계/CM 등급은 잡히는데 품질관리 등급만 누락되는 케이스)
-        # - 단, 다른 섹션(인적사항/학력/교육훈련/근무처 등)은 기존 정책대로 텍스트 기반을 우선한다.
+        # - 등급/국가기술자격은 "부분 누락"이 있어도 표/좌표 기반 파서로 보강한다.
+        # - 벌점/제재는 표·텍스트가 모두 기본값이면 section_parsers 표 경로를 시도한다.
 
         page0 = ctx.get_page(page_num) if page_num is not None else None
         pdf_path = getattr(ctx, "pdf_path", None)
+
+        # 0) 벌점 및 제재사항: 기본값이면 parse_penalty_and_sanction_info (표 기반)
+        try:
+            pen = result.get("벌점및제재사항") or {}
+            bdef = str(pen.get("벌점") or "").strip() in ("", "해당없음")
+            jraw = pen.get("제재사항")
+            jdef = (jraw == "해당없음") or (
+                isinstance(jraw, str) and not str(jraw).strip()
+            ) or (isinstance(jraw, list) and len(jraw) == 0)
+            if bdef and jdef and page0 is not None:
+                p2 = parse_penalty_and_sanction_info(page0) or {}
+                if isinstance(p2, dict) and p2:
+                    if not isinstance(result["벌점및제재사항"], dict):
+                        result["벌점및제재사항"] = {"벌점": "해당없음", "제재사항": "해당없음"}
+                    if str(p2.get("벌점") or "").strip() and str(p2.get("벌점")).strip() != "해당없음":
+                        result["벌점및제재사항"]["벌점"] = p2.get("벌점")
+                    sj = p2.get("제재사항")
+                    if isinstance(sj, list) and sj:
+                        result["벌점및제재사항"]["제재사항"] = sj
+                    elif str(sj or "").strip() and str(sj).strip() != "해당없음":
+                        result["벌점및제재사항"]["제재사항"] = sj
+        except Exception as ex:
+            try:
+                _page1_agent_log(
+                    run_id="page1-table",
+                    hypothesis_id="P",
+                    location="page_1_parser.py:parse_page_1:penalty_fallback",
+                    message="parse_penalty_and_sanction_info failed",
+                    data={"error": repr(ex)},
+                )
+            except Exception:
+                pass
 
         # 1) 등급: 텍스트 기반은 레이아웃/추출 편차(** 누락, 줄분리 등)에 취약하다.
         #    - 전부 비어있는 경우뿐 아니라, "부분 누락"이 있으면 표/좌표 기반 파서로 보강한다.

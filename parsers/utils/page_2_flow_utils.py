@@ -20,7 +20,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import re
 
 from parsers.tech_career_heuristics import load_tech_career_heuristics
-from parsers.tech_career_common import _is_annotation_or_footnote_line, _is_footer_or_header_line
+from parsers.tech_career_common import (
+    _is_annotation_or_footnote_line,
+    _is_footer_or_header_line,
+    _norm_space,
+    _strip_tail_job_duty,
+)
 
 
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
@@ -38,10 +43,6 @@ _DUTY_PAREN_RE = re.compile(r"^\([^)]+\)$")
 
 def _norm_key(s: str) -> str:
     return re.sub(r"\s+", "", (s or "").strip())
-
-
-def _norm_space(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").strip())
 
 
 def _line_starts_with_overview_continue_marker(s: str) -> bool:
@@ -193,22 +194,6 @@ def _is_probable_project_name_line(line: str) -> bool:
     if _looks_like_technical_overview_line(s):
         return False
     return True
-
-
-def _strip_tail_job_duty(name: str) -> tuple[str, str, str]:
-    s = _norm_space(name)
-    if not s:
-        return s, "", ""
-    parts = s.split(" ")
-    if len(parts) >= 3 and parts[-2] in _JOB_FIELD_HINTS:
-        project = " ".join(parts[:-2]).strip()
-        if project:
-            return project, parts[-2], parts[-1]
-    if len(parts) >= 2 and parts[-1] in _JOB_FIELD_HINTS:
-        candidate = " ".join(parts[:-1]).strip()
-        if candidate:
-            return candidate, parts[-1], ""
-    return s, "", ""
 
 
 def _parse_project_line(line: str) -> Optional[dict]:

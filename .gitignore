@@ -15,3 +15,9 @@ parse.log
 
 # Test / tooling caches
 .pytest_cache/
+
+# Local preview artifacts
+/2026-05-05_page1-table-preview/
+
+# Scratch docs (local-only)
+/docs/*.txt

@@ -16,9 +16,7 @@ from __future__ import annotations
 from typing import Any, Dict, Iterator, List
 from pathlib import Path
 from functools import lru_cache
-import json
 import re
-import time
 from datetime import datetime
 
 from parsers.table_settings import (
@@ -37,30 +35,8 @@ from parsers.table_career_parser import (
     parse_period_cell,
 )
 from parsers.tech_career_heuristics import compiled_any, load_tech_career_heuristics
-
-# ──────────────────────────────────────────────────────────────────────────────
-# agent debug log (page_2_parser와 동일 형식 유지)
-# ──────────────────────────────────────────────────────────────────────────────
-_AGENT_DEBUG_LOG_PATH = "debug-dcc858.log"
-_AGENT_DEBUG_SESSION_ID = "dcc858"
-
-
-def _agent_log(*, run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    """DEBUG MODE: append NDJSON log lines (never raises)."""
-    try:
-        payload = {
-            "sessionId": _AGENT_DEBUG_SESSION_ID,
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        return
+from parsers.utils.tech_career_common import _norm_space
+from parsers.utils.logger import agent_debug_log as _agent_log
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -73,6 +49,15 @@ _RE_OVERVIEW_LISTISH = compiled_any(_TC_H.overview_listish_patterns)
 _RE_PROJECT_START = compiled_any(_TC_H.project_start_regexes)
 
 _JOB_FIELD_HINTS = frozenset(_TC_H.job_field_hints or ())
+_POSITION_TOKENS = frozenset(_TC_H.table_col3_position_tokens or ())
+_ISSUER_POS_EXTRA = frozenset(_TC_H.issuer_position_extra_tokens or ())
+
+
+def _looks_like_position_token(s: str) -> bool:
+    t = _norm_space(s)
+    if not t:
+        return False
+    return t in _POSITION_TOKENS or t in _ISSUER_POS_EXTRA
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -122,28 +107,47 @@ def _sanitize_header_like_project_names(rows: List[Dict[str, Any]], *, page_num_
         if not isinstance(r, dict):
             continue
         nm = str(r.get("사업명") or "").strip()
-        if _looks_like_table_column_header_phrase(nm):
-            r["사업명"] = ""
-            jf = str(r.get("직무분야") or "").strip()
-            dt = str(r.get("담당업무") or "").strip()
-            if _looks_like_table_column_header_phrase(jf):
-                r["직무분야"] = ""
-            if _looks_like_table_column_header_phrase(dt):
-                r["담당업무"] = ""
+        if not _looks_like_table_column_header_phrase(nm):
+            continue
+        # 다른 필드에 실제 데이터가 있으면 정상 레코드일 가능성이 높음 → 건너뜀
+        has_other_data = bool(str(r.get("발주자") or "").strip() or str(r.get("공사종류") or "").strip())
+        if has_other_data:
             if logged < 3:
                 logged += 1
                 _agent_log(
                     run_id="pre-fix",
                     hypothesis_id="D",
                     location="tech_career_table_only_core.py:_sanitize_header_like_project_names",
-                    message="cleared header-like project name contamination",
+                    message="sanitize skipped: header-like name but other fields present",
                     data={
                         "page_num_1based": page_num_1based,
-                        "bad_name": nm[:80],
+                        "name": nm[:80],
                         "발주자": str(r.get("발주자") or "")[:40],
-                        "직위": str(r.get("직위") or "")[:20],
+                        "공사종류": str(r.get("공사종류") or "")[:40],
                     },
                 )
+            continue
+        r["사업명"] = ""
+        jf = str(r.get("직무분야") or "").strip()
+        dt = str(r.get("담당업무") or "").strip()
+        if _looks_like_table_column_header_phrase(jf):
+            r["직무분야"] = ""
+        if _looks_like_table_column_header_phrase(dt):
+            r["담당업무"] = ""
+        if logged < 3:
+            logged += 1
+            _agent_log(
+                run_id="pre-fix",
+                hypothesis_id="D",
+                location="tech_career_table_only_core.py:_sanitize_header_like_project_names",
+                message="cleared header-like project name contamination",
+                data={
+                    "page_num_1based": page_num_1based,
+                    "bad_name": nm[:80],
+                    "발주자": str(r.get("발주자") or "")[:40],
+                    "직위": str(r.get("직위") or "")[:20],
+                },
+            )
 
 
 def _is_bonsa_like_project_name(s: str) -> bool:
@@ -181,17 +185,37 @@ def _sanitize_overview_like_project_names(rows: List[Dict[str, Any]], *, page_nu
         nm = str(r.get("사업명") or "").strip()
         if not nm:
             continue
-        if _looks_like_overview_sentence_as_project_name(nm):
-            r["사업명"] = ""
+        if not _looks_like_overview_sentence_as_project_name(nm):
+            continue
+        # 참여기간 또는 인정일수가 있으면 실제 경력 레코드 → 사업명 보존
+        has_period = bool(str(r.get("참여기간_시작일") or "").strip())
+        has_days = bool(str(r.get("인정일수") or "").strip())
+        if has_period or has_days:
             if logged < 3:
                 logged += 1
                 _agent_log(
                     run_id="pre-fix",
                     hypothesis_id="E",
                     location="tech_career_table_only_core.py:_sanitize_overview_like_project_names",
-                    message="cleared overview-like sentence from project name",
-                    data={"page_num_1based": page_num_1based, "bad_name": nm[:120]},
+                    message="sanitize skipped: overview-like name but period/days present",
+                    data={
+                        "page_num_1based": page_num_1based,
+                        "name": nm[:120],
+                        "참여기간_시작일": str(r.get("참여기간_시작일") or "")[:20],
+                        "인정일수": str(r.get("인정일수") or "")[:10],
+                    },
                 )
+            continue
+        r["사업명"] = ""
+        if logged < 3:
+            logged += 1
+            _agent_log(
+                run_id="pre-fix",
+                hypothesis_id="E",
+                location="tech_career_table_only_core.py:_sanitize_overview_like_project_names",
+                message="cleared overview-like sentence from project name",
+                data={"page_num_1based": page_num_1based, "bad_name": nm[:120]},
+            )
 
 
 def _cleanup_tech_career_job_noise_rows(rows: List[Dict[str, Any]]) -> None:
@@ -222,22 +246,7 @@ def _fix_shifted_fields_in_tech_career_rows(rows: List[Dict[str, Any]]) -> None:
     - 직무분야가 '및'로 오염된 대표 케이스 보정
     """
 
-    def _norm_space(s: str) -> str:
-        return re.sub(r"\s+", " ", (s or "").strip())
-
-    position_tokens = frozenset(_TC_H.table_col3_position_tokens or ())
-    issuer_position_extra = frozenset(_TC_H.issuer_position_extra_tokens or ())
     and_token = (_TC_H.and_token or "및").strip() or "및"
-
-    def _looks_like_position_token(s: str) -> bool:
-        t = _norm_space(s)
-        if not t:
-            return False
-        if t in position_tokens:
-            return True
-        if t in issuer_position_extra:
-            return True
-        return False
 
     for r in rows or []:
         if not isinstance(r, dict):
@@ -246,6 +255,13 @@ def _fix_shifted_fields_in_tech_career_rows(rows: List[Dict[str, Any]]) -> None:
         issuer = _norm_space(str(r.get("발주자") or ""))
         pos = _norm_space(str(r.get("직위") or ""))
         if issuer and _looks_like_position_token(issuer) and not pos:
+            _agent_log(
+                run_id="fix-shift",
+                hypothesis_id="W3",
+                location="_fix_shifted_fields_in_tech_career_rows",
+                message="swapped 발주자→직위 (position token in issuer field)",
+                data={"발주자_before": issuer, "사업명": _norm_space(str(r.get("사업명") or ""))[:60]},
+            )
             r["직위"] = issuer
             r["발주자"] = ""
 

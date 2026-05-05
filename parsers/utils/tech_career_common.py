@@ -16,12 +16,170 @@ import re
 from parsers.document_context import DocumentContext
 from parsers.tech_career_heuristics import load_tech_career_heuristics
 from pathlib import Path
+from field_catalog import best_match_specialty, get_field_catalog  # // [수정] 전문분야 정규화(카탈로그 기반)
+import field_catalog as _fc  # // [수정] _compact_ws 등 내부 정규화와 동일 규칙 유지
 
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+# parsers/utils → PDF-parser 루트( field_catalog.py / data/ 와 동일 기준 )
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent
 _TC_H = load_tech_career_heuristics(_PROJECT_ROOT)
 _JOB_FIELD_HINTS = frozenset(_TC_H.job_field_hints or ())
+_CATALOG = get_field_catalog(project_root=str(_PROJECT_ROOT))  # // [수정]
 
 _DATE_RE = re.compile(r"^\d{4}\.\d{2}(?:\.\d{2})?$")
+
+# // [수정] 병합셀·특허/신기술 꼬리가 붙은 전문분야는 잘라내지 않고 통째로 둔다.
+_RE_KEEP_FULL_SPECIALTY = re.compile(
+    r"특허|신기술|인\s*증서|인증서|\d{2,4}\s*-\s*\d+\s*-\s*\d+\s*호",
+    re.I,
+)
+# // [수정] 공법/교량 등 설명이 전문분야 셀에 붙은 전형 패턴(인명 하드코딩 없음)
+_RE_KEEP_FULL_SPECIALTY_EXTRA = re.compile(
+    r"P\s*공법|교량\s*\d*\s*개|복층|저소음",
+    re.I,
+)
+
+# `*` 뒤에 붙는 담당·직무 꼬리(전문분야+담당업무 병합 추출물)
+_DUTY_TAIL_AFTER_STAR = (
+    "공사감독",
+    "공사관리",
+    "시공관리",
+    "설계감리",
+    "감리",
+    "감독",
+    "분야책임기술인",
+)
+
+
+def _norm_space(s: str) -> str:
+    return re.sub(r"\s+", " ", (s or "").replace("\u00A0", " ").strip())
+
+
+def _ocr_fix_specialty(s: str) -> str:
+    # '입식 흙맑이'가 '립식'으로 깨지는 OCR
+    return (s or "").replace("립식", "입식")
+
+
+def _normalize_star_glue(s: str) -> str:
+    """전문분야+직무가 `*`로 이어진 표기: 공백만 정리하고 `*`는 유지."""
+    t = _norm_space(s)
+    return re.sub(r"\s*\*\s*", "*", t)
+
+
+def _dedupe_adjacent_repeat(s: str) -> str:
+    """공백 제거 기준으로 동일 절반이 2회 반복되면 1회로."""
+    s_n = re.sub(r"\s+", "", s)
+    if len(s_n) >= 6 and (len(s_n) % 2 == 0):
+        half = len(s_n) // 2
+        if s_n[:half] == s_n[half:]:
+            return s_n[:half]
+    return s
+
+
+def _should_keep_full_specialty_cell(s: str) -> bool:
+    if _RE_KEEP_FULL_SPECIALTY.search(s):
+        return True
+    if _RE_KEEP_FULL_SPECIALTY_EXTRA.search(s) and len(s) >= 10:
+        return True
+    return False
+
+
+def _try_rebuild_asterisk_compacted_specialties(left: str, right: str) -> str | None:
+    """
+    예: '도로및공항상하수도' + '공사감독' → 카탈로그 조각을 이어붙여
+    '도로및공항상하수도*공사감독' 형태로 복원.
+    """
+    left_c = _fc._compact_ws(left)
+    if not left_c:
+        return None
+    r = _norm_space(right)
+    if not r:
+        return None
+    duty = ""
+    for d in sorted(_DUTY_TAIL_AFTER_STAR, key=len, reverse=True):
+        if r.startswith(d):
+            duty = d
+            break
+    if not duty:
+        return None
+
+    specs = sorted(
+        (_fc._compact_ws(sp) for sp in _CATALOG.all_specialties if _fc._compact_ws(sp)),
+        key=len,
+        reverse=True,
+    )
+    i = 0
+    parts: List[str] = []
+    while i < len(left_c):
+        hit = ""
+        for sp in specs:
+            if left_c.startswith(sp, i):
+                hit = sp
+                break
+        if not hit:
+            return None
+        parts.append(hit)
+        i += len(hit)
+    if i != len(left_c):
+        return None
+    return "".join(parts) + "*" + duty
+
+
+def normalize_specialty_field(raw: str) -> str:
+    """
+    // [수정] '전문분야' 필드 정규화.
+    JSON 오류 샘플 기반(하드코딩 금지, 일반 규칙):
+    - 줄바꿈/과도 공백 제거, OCR(립식→입식), `*` 주변 공백 정리
+    - 같은 문자열이 붙어서 2회 반복('토목구조토목구조' 등) → 1회로 축약
+    - 특허·신기술·인증서·○○-○-○호 등 설명이 붙은 셀 → 잘라내지 않고 통째로 유지
+    - `도로…상하수도*공사감독`처럼 전문분야+직무가 `*`로 붙은 경우 → 카탈로그 기반으로 좌측 압축 복원
+    - 그 외 → 카탈로그 best-match, 실패 시 숫자/특허 앞까지 절단 폴백
+    """
+    s = _norm_space(_ocr_fix_specialty(str(raw or "")))
+    if not s:
+        return ""
+
+    s = _normalize_star_glue(s)
+    s = _dedupe_adjacent_repeat(s)
+
+    if _should_keep_full_specialty_cell(s):
+        return _norm_space(s)
+
+    if "*" in s:
+        a, b = s.split("*", 1)
+        rebuilt = _try_rebuild_asterisk_compacted_specialties(a, b)
+        if rebuilt:
+            return rebuilt
+
+    try:
+        sp = best_match_specialty(s, _CATALOG)
+        if sp:
+            return sp
+    except Exception:
+        pass
+
+    s2 = re.split(r"(?:\d{2,}|특허|인증서|신기술|호\)|호,|호\s)", s, maxsplit=1)[0].strip()
+    s2 = _norm_space(s2)
+    return s2
+
+
+def normalize_duty_field(raw: str) -> str:
+    """
+    // [수정] '담당업무' 정규화.
+    - 줄바꿈/공백 정리
+    - 괄호가 열린 채로 끝나는 경우 ')' 보강(예: '(분야책임기술인')
+    """
+    s = _norm_space(str(raw or ""))
+    if not s:
+        return ""
+    # 괄호 불균형 보정(최소 침습)
+    if s.count("(") > s.count(")"):
+        s = s + ")"
+    return s
+
+
+def normalize_worktype_field(raw: str) -> str:
+    """// [수정] '공사종류' 공백 정규화(줄바꿈→공백, 중복 공백 축약)."""
+    return _norm_space(str(raw or ""))
 
 
 def _is_annotation_or_footnote_line(line: str) -> bool:
@@ -307,7 +465,8 @@ def merge_cross_page_tech_overviews(
                 next_name = str(careers[first_next_idx].get("사업명") or "").strip()
                 cont_norm = re.sub(r"\s+", " ", cont).strip()
                 name_norm = re.sub(r"\s+", " ", next_name).strip()
-                if cont_norm and name_norm.startswith(cont_norm):
+                # 연속 텍스트가 충분히 길 때만 사업명 정리 (짧으면 오판 위험)
+                if cont_norm and len(cont_norm) >= 8 and name_norm.startswith(cont_norm):
                     cleaned = name_norm[len(cont_norm) :].strip()
                     careers[first_next_idx]["사업명"] = cleaned
     except Exception:

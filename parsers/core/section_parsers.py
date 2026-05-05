@@ -100,11 +100,61 @@ _AWARD_DATE_TOKEN = re.compile(r"\d{4}\.\d{2}\.\d{2}")
 # re.MULTILINE 플래그를 compile 인자로 전달((?m) 인라인 플래그를 패턴 중간에 쓰면 Python 3.11+ 에서 오류).
 _AWARD_SECTION_END = re.compile(
     r"^\s*(?:벌점\s*및\s*제재사항?|근무처|교육훈련|국가기술자격|1\.\s*기술경력|2\.\s*건설사업관리)\s*$"
-    r"|^\s*(?:벌점\s*및\s*제재|근무처\s+근무기간|교육훈련\s+교육기간)",
+    r"|^\s*(?:벌점\s*및\s*제재|근무처\s+근무기간|교육훈련\s+교육기간)"
+    # // [수정] 상훈 블록 직후 '벌점 *해당없음*' 단독 줄은 섹션 종료로 인식(종류및근거·다음 행 병합 오염 방지)
+    r"|^\s*벌점\s*[*＊]?\s*해당없음\s*[*＊]?\s*$",
     re.MULTILINE,
 )
-_TYPE_TAIL_HINT = re.compile(r"(표창|훈장|포장|감사장|장려|감사|\[제\s*\d+호\]|제\s*\d+\s*호)")
-_AWARD_TYPE_TOKENS = ("표창장", "표창패", "훈장", "포장", "감사장", "상장", "유공표창", "우수상")
+# // [수정] '표창'이 '표창장' 접두로 먼저 매칭되어 수여기관/종류 경계가 깨지지 않도록,
+# 분리 힌트는 _earliest_award_type_token_pos() + 보조 패턴만 사용한다(이 정규식은 _looks_like_new_award_type_line 보조용).
+_TYPE_TAIL_HINT = re.compile(
+    r"(?:공로표창장|표창장|표창패|표창|유공표창|우수상|훈장증|훈장|포장|감사장|상장|\[제\s*\d+호\]|제\s*\d+\s*호)"
+)
+# 긴 토큰을 앞에 둔다(부분 문자열 오매칭 방지). JSON 오류 샘플: 공로표창장·훈장증·표창[제…]·(괄호)수여자 형태
+_AWARD_TYPE_TOKENS = (
+    "공로표창장",
+    "표창장",
+    "표창패",
+    "유공표창",
+    "우수상",
+    "훈장증",
+    "훈장",
+    "포장",
+    "감사장",
+    "상장",
+    "표창",
+)
+# 종류및근거에서 상훈 블록을 찾을 때: 괄호 수여자명 + 대괄호 근거, 표창(단)·훈장증 등
+_AWARD_BLOCK_RE = re.compile(
+    r"(?:공로표창장(?:\([^)]*\))?\[[^\]]*\]"
+    r"|훈장증\[[^\]]*\]"
+    r"|표창장(?:\([^)]*\))?\[[^\]]*\]"
+    r"|표창(?:\([^)]*\))?\[[^\]]*\]"
+    r"|표창패(?:\([^)]*\))?\[[^\]]*\]"
+    r"|유공표창(?:\([^)]*\))?\[[^\]]*\]"
+    r"|우수상\[[^\]]*\]"
+    r"|감사장(?:\([^)]*\))?\[[^\]]*\]"
+    r"|포장(?:\([^)]*\))?\[[^\]]*\]"
+    r"|훈장\[[^\]]*\]"
+    r"|상장(?:\([^)]*\))(?:\[[^\]]*\])?"
+    r")"
+)
+
+
+def _earliest_award_type_token_pos(s: str) -> int | None:
+    """// [수정] 수여기관과 종류및근거 경계: 가장 앞에 나오는 공식 상훈 종류 토큰 위치(부분 문자열 오매칭 방지)."""
+    s = s or ""
+    best: int | None = None
+    for tok in _AWARD_TYPE_TOKENS:
+        p = s.find(tok)
+        if p < 0:
+            continue
+        # '표창[' 는 유효하나 '표창장'의 접두 '표창'는 무시
+        if tok == "표창" and s.startswith("표창장", p):
+            continue
+        if best is None or p < best:
+            best = p
+    return best
 
 
 def _squash_whitespace_inside_first_award_bracket_body(t: str) -> str:
@@ -133,6 +183,67 @@ def _squash_whitespace_inside_first_award_bracket_body(t: str) -> str:
     return s[: open_i + 1] + inner_flat + s[close_i:]
 
 
+def _extract_award_type_bracket_blocks(typ: str) -> list[str]:
+    """// [수정] 종류및근거에서 상훈 블록(괄호 수여자·표창/훈장증/공로표창장 등)을 순서대로 추출."""
+    s = (typ or "").replace("\n", " ").strip()
+    if not s:
+        return []
+    return [m.group(0).strip() for m in _AWARD_BLOCK_RE.finditer(s)]
+
+
+def _collapse_repeated_award_block_sequence(blocks: list[str]) -> list[str]:
+    """// [수정] [A,B,A,B,…]처럼 동일 시퀀스가 반복되면 한 번분만 남긴다(병합셀 전체 복제)."""
+    if len(blocks) < 2:
+        return blocks
+    n = len(blocks)
+    for period in range(n // 2, 0, -1):
+        if n % period != 0:
+            continue
+        reps = n // period
+        head = blocks[:period]
+        if all(blocks[i * period : (i + 1) * period] == head for i in range(reps)):
+            return list(head)
+    return blocks
+
+
+def _dedupe_similar_adjacent_award_blocks(blocks: list[str]) -> list[str]:
+    """// [수정] 괄호 안 본문이 공백만 다른 인접 블록은 하나로 합친다(더 긴 표기 유지)."""
+    out: list[str] = []
+
+    def _inner_compact(b: str) -> str:
+        m = re.search(r"\[([^\]]*)\]", b)
+        if not m:
+            return re.sub(r"\s+", "", b)
+        return re.sub(r"\s+", "", m.group(1) or "")
+
+    for b in blocks:
+        b = b.strip()
+        if not b:
+            continue
+        if out and _inner_compact(out[-1]) == _inner_compact(b):
+            if len(b) > len(out[-1]):
+                out[-1] = b
+            continue
+        out.append(b)
+    return out
+
+
+def _strip_redundant_orphan_ho_suffix(t: str) -> str:
+    """// [수정] 앞 블록 끝 뒤에만 덩그러니 '[제…호]'가 붙고 숫자가 앞 본문에 이미 있으면 제거(신용호 샘플)."""
+    s = (t or "").strip()
+    m = re.search(r"^(.*\])\s*\[(제\s*[\d－-]+\s*호)\]\s*$", s)
+    if not m:
+        return t
+    head, ho = m.group(1), m.group(2)
+    digits_ho = re.sub(r"[^\d]", "", ho)
+    if not digits_ho or len(digits_ho) > 10:
+        return t
+    head_digits = re.sub(r"[^\d]", "", head)
+    if digits_ho in head_digits:
+        return head.strip()
+    return t
+
+
 def _normalize_award_type_text(s: str) -> str:
     """
     상훈 종류/근거 문자열을 정규화한다.
@@ -147,6 +258,11 @@ def _normalize_award_type_text(s: str) -> str:
     t = re.sub(r"\b상훈\b", " ", t).strip()
     # '제99-2 30호' -> '제99-230호' (공백/하이픈 주변 공백 정리)
     t = re.sub(r"(제\s*\d+\s*[-–]\s*\d+)\s+(\d+\s*호)", r"\1\2", t)
+    # // [수정] '표창'이 잘려 '장[제…]'만 남는 PDF(김종성 샘플)
+    t = re.sub(r"^장(\[(?:제\s*)[^\]]+\])", r"표창장\1", t).strip()
+    # // [수정] '표창장 표창장[' 중복 토큰(손종록·조관희 샘플)
+    t = re.sub(r"(?:^|\s)표창장(?:\s+표창장)+(?=[\[(])", " 표창장", t).strip()
+    t = re.sub(r"\s+", " ", t).strip()
     # 표/셀 분리로 타입 토큰 앞쪽이 깨져 앞에 잡음이 붙는 케이스 제거:
     # 예) '장[ 21337] 표창장[21337]' -> '표창장[21337]'
     # 예) '...기여] 감사장[감리원...' 처럼 앞에 설명이 붙으면 '감사장[...]'부터로 절단
@@ -156,6 +272,43 @@ def _normalize_award_type_text(s: str) -> str:
             t = t[pos:].strip()
             break
     t = re.sub(r"\s+", " ", t).strip()
+
+    # // [수정] 벌점 섹션(해당없음) 문자열이 상훈 종류/근거에 붙는 PDF·표 병합 유입 제거
+    t = re.sub(
+        r"(?i)(?:^|\s)벌점\s*[*＊・]?\s*해당없음\s*[*＊・]?(?=\s|$)",
+        " ",
+        t,
+    ).strip()
+    t = re.sub(r"(?i)\s*벌점\s*[*＊・]?\s*해당없음\s*[*＊・]?\s*$", "", t).strip()
+    t = _strip_redundant_orphan_ho_suffix(t)
+
+    # // [수정] 동일 '토큰[...]' 블록이 연속 중복된 경우(표 병합·이전 행 꼬리) 1회만 유지
+    try:
+        for tok in sorted(_AWARD_TYPE_TOKENS, key=len, reverse=True):
+            esc = re.escape(tok)
+            pat = re.compile(rf"({esc}\[[^\]]*\])\s+\1(?=\s|$)")
+            while True:
+                t2, n = pat.subn(r"\1", t, count=1)
+                if not n:
+                    break
+                t = re.sub(r"\s+", " ", t2).strip()
+    except Exception:
+        pass
+
+    # // [수정] 동일 상훈 블록(괄호형 포함)이 바로 이어 중복된 경우(문경현·박봉관·신복수 샘플)
+    try:
+        for _ in range(24):
+            blocks = _extract_award_type_bracket_blocks(t)
+            if len(blocks) < 2 or blocks[0] != blocks[1]:
+                break
+            b0 = blocks[0]
+            patd = re.compile(re.escape(b0) + r"\s+" + re.escape(b0))
+            t2, n = patd.subn(b0, t, count=1)
+            if not n:
+                break
+            t = re.sub(r"\s+", " ", t2).strip()
+    except Exception:
+        pass
 
     # FIX: 표 추출/continuation 병합 과정에서 같은 근거 문구가
     # 대괄호 닫힘(]) 뒤에 "부분 중복"으로 한 번 더 붙는 케이스가 있다.
@@ -218,6 +371,19 @@ def _normalize_award_type_text(s: str) -> str:
                                 t = head.strip() + "]"
     except Exception:
         pass
+    # // [수정] 인접·주기 반복되는 표창장[…] 블록 정리(공백 차이 중복·ABAB 병합셀)
+    try:
+        blocks = _extract_award_type_bracket_blocks(t)
+        if len(blocks) >= 2:
+            blocks2 = _collapse_repeated_award_block_sequence(blocks)
+            blocks2 = _dedupe_similar_adjacent_award_blocks(blocks2)
+            if blocks2 != blocks:
+                t = re.sub(r"\s+", " ", " ".join(blocks2)).strip()
+    except Exception:
+        pass
+    # // [수정] 미닫힌 대괄호(조재범 샘플 등) — 짧은 꼬리만 보정
+    if "[" in t and t.count("[") > t.count("]") and len(t) < 240:
+        t = t + "]"
     # [수정] 병합/줄바꿈 경로별로 들어간 뒤에도 근거 본문(첫 번째 [...]) 내부 공백을 일괄 정리한다.
     t = _squash_whitespace_inside_first_award_bracket_body(t)
     return t
@@ -312,6 +478,147 @@ def _award_type_quality_score(s: str) -> int:
 
 def _norm_award_key_inst(s: str) -> str:
     return re.sub(r"\s+", "", (s or "").strip())
+
+
+_AMBIG_SHORT_ORG_LIKE_AWARD_WORDS = frozenset(
+    {"표창", "훈장", "포장", "감사", "상장", "장려", "포상", "유공"}
+)
+# // [수정] 엑셀/JSON 오류 샘플: '관리청 표창'·'관 감사' 등은 수여기관이 아니라 표 제목/구분 파편
+_INST_ORG_NOISE_PHRASES = frozenset(
+    {
+        "관리청 표창",
+        "관 감사",
+        "경기도유공",
+    }
+)
+# 한 글자만 오는 잘못된 기관 칸(시·청·관·사 등). JSON: 허영수 '시', 황승철 '청', 김순식 '사'…
+_INST_ORG_SINGLE_JUNK = frozenset("시청관사벽")
+
+
+def _sanitize_award_institution_field(inst: str, typ: str) -> str:
+    """// [수정] 수여기관 칸에 종류·포상 구분어 파편만 들어온 경우 비운다(종류는 그대로, 기관은 infer/빈값)."""
+    inst = (inst or "").replace("\n", " ").strip()
+    if not inst:
+        return ""
+    if inst in _AMBIG_SHORT_ORG_LIKE_AWARD_WORDS or inst in _INST_ORG_NOISE_PHRASES:
+        return ""
+    if len(inst) == 1 and inst in _INST_ORG_SINGLE_JUNK:
+        return ""
+    typ = (typ or "").strip()
+    if len(inst) <= 2 and typ and _earliest_award_type_token_pos(typ) == 0:
+        return ""
+    # // [수정] '새서' 등 분할 깨짐 파편(이갑덕 샘플 — '새서울상' 등)
+    if inst in frozenset({"새서"}):
+        return ""
+    if "/" in inst and len(inst) <= 12 and typ and _earliest_award_type_token_pos(typ) == 0:
+        return ""
+    return inst
+
+
+def _dedupe_award_type_suffix_bleed(awards: List[Dict[str, Any]]) -> None:
+    """// [수정] 한 레코드 종류및근거 끝에 '다른 수여 건'의 종류 문자열 전체가 이어붙은 경우 제거."""
+    if not awards or len(awards) < 2:
+        return
+    for i, a in enumerate(awards):
+        typ = str(a.get("종류및근거") or "").strip()
+        if not typ or "]" not in typ:
+            continue
+        typ_n = re.sub(r"\s+", "", typ)
+        best_pre: str | None = None
+        best_ot_len = 0
+        for j, b in enumerate(awards):
+            if i == j:
+                continue
+            ot = str(b.get("종류및근거") or "").strip()
+            ot_n = re.sub(r"\s+", "", ot)
+            if len(ot_n) < 12:
+                continue
+            if typ_n.endswith(ot_n) and len(typ_n) > len(ot_n) and len(ot_n) >= best_ot_len:
+                want_n = typ_n[: -len(ot_n)]
+                cut: str | None = None
+                for k in range(len(typ), 0, -1):
+                    pre = typ[:k].strip()
+                    if re.sub(r"\s+", "", pre) == want_n:
+                        cut = pre
+                        break
+                if cut and cut.endswith("]"):
+                    best_ot_len = len(ot_n)
+                    best_pre = cut
+        if best_pre is not None:
+            a["종류및근거"] = best_pre
+
+
+def _redistribute_award_types_when_merged_cell_duplicated(awards: List[Dict[str, Any]]) -> None:
+    """// [수정] 세로 병합으로 모든 날짜 행에 '종류및근거' 전체가 동일 복제된 경우 블록을 행 수만큼 분배."""
+    if not awards:
+        return
+    real: list[dict] = []
+    for a in awards:
+        dt = str(a.get("수여일") or "").strip()
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", dt):
+            real.append(a)
+    if len(real) < 2:
+        return
+    # // [수정] 앞 단계마다 공백·괄호 처리 차이로 문자열이 미세하게 달라 분배가 스킵되는 것 방지
+    typs = [_normalize_award_type_text(str(x.get("종류및근거") or "")) for x in real]
+    t0n = re.sub(r"\s+", "", typs[0])
+    if not t0n or not all(re.sub(r"\s+", "", t) == t0n for t in typs):
+        return
+    blocks = _extract_award_type_bracket_blocks(typs[0])
+    blocks = _collapse_repeated_award_block_sequence(blocks)
+    blocks = _dedupe_similar_adjacent_award_blocks(blocks)
+    if len(blocks) != len(real):
+        return
+    real.sort(key=lambda x: str(x.get("수여일") or ""))
+    for row, blk in zip(real, blocks):
+        row["종류및근거"] = _normalize_award_type_text(blk).strip()
+
+
+def _split_merged_award_institution_pair(awards: List[Dict[str, Any]]) -> None:
+    """// [수정] 한 셀에 '서울특별시 전라남도순천시'처럼 두 기관이 붙고, 다음 행 기관이 앞 토큰과 동일한 병합 표."""
+    real: list[dict] = []
+    for a in awards or []:
+        dt = str(a.get("수여일") or "").strip()
+        if re.match(r"^\d{4}-\d{2}-\d{2}$", dt):
+            real.append(a)
+    if len(real) != 2:
+        return
+    real.sort(key=lambda x: str(x.get("수여일") or ""))
+    a0, a1 = real[0], real[1]
+    ins0 = str(a0.get("수여기관") or "").replace("\n", " ").strip()
+    ins1 = str(a1.get("수여기관") or "").replace("\n", " ").strip()
+    if not ins0 or " " not in ins0 or not ins1:
+        return
+    parts = ins0.split()
+    if len(parts) != 2:
+        return
+    if parts[0] == ins1 and parts[1]:
+        a0["수여기관"] = parts[1].strip()
+        a1["수여기관"] = parts[0].strip()
+
+
+def _dedupe_award_rows_same_date_identical_typ(awards: List[Dict[str, Any]]) -> None:
+    """// [수정] 동일 수여일·동일 정규화(기관+종류)의 중복 레코드 제거(엑셀 비교 시 중복 행·표 이중 추출)."""
+    if not awards or len(awards) < 2:
+        return
+    seen: set[tuple[str, str, str]] = set()
+    out: list[dict] = []
+    for a in awards:
+        if not isinstance(a, dict):
+            continue
+        dt = str(a.get("수여일") or "").strip()
+        if (not dt) or (dt == "해당없음") or (not re.match(r"^\d{4}-\d{2}-\d{2}$", dt)):
+            out.append(a)
+            continue
+        inst_n = re.sub(r"\s+", "", str(a.get("수여기관") or "").strip())
+        typ_n = re.sub(r"\s+", "", _normalize_award_type_text(str(a.get("종류및근거") or "").strip()))
+        key = (dt, inst_n, typ_n)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(a)
+    if len(out) != len(awards):
+        awards[:] = out
 
 
 # 상훈 '해당없음' 행: 빈 배열 대신 필드 3개를 유지하고 값만 해당없음으로 둔다.
@@ -489,21 +796,16 @@ def count_award_data_lines_in_section_text(section_text: str) -> int:
 def _split_tail_institution_and_type(tail: str) -> tuple[str, str]:
     if not tail:
         return "", ""
-    m = _TYPE_TAIL_HINT.search(tail)
-    if m:
-        return tail[: m.start()].strip(), tail[m.start() :].strip()
-    # [수정] 우수상[ 등 '_TYPE_TAIL_HINT' 밖 패턴 분리(_TYPE_TAIL_HINT 확장 없이 공통 토큰 활용)
-    best_pos: int | None = None
-    for tok in _AWARD_TYPE_TOKENS:
-        p = tail.find(tok)
-        if p < 0:
-            continue
-        if best_pos is None or p < best_pos:
-            best_pos = p
+    tail = tail.strip()
+    # // [수정] '표창' 등 짧은 힌트가 '표창장'보다 먼저 매칭되는 문제 제거 → 토큰 최소 위치로만 분리
+    best_pos = _earliest_award_type_token_pos(tail)
     if best_pos is not None:
         if best_pos == 0:
             return "", tail.strip()
         return tail[:best_pos].strip(), tail[best_pos:].strip()
+    m = _TYPE_TAIL_HINT.search(tail)
+    if m:
+        return tail[: m.start()].strip(), tail[m.start() :].strip()
     return tail.strip(), ""
 
 
@@ -530,6 +832,9 @@ def _parse_awards_from_text_block(page_text: str) -> List[Dict[str, Any]]:
         ln2 = re.sub(r"^\s*상훈\s+", "", ln).strip()
         if not ln2:
             continue
+        # // [수정] 상훈 섹션과 벌점 표가 한 텍스트 블록에 붙은 경우 데이터 줄로 오인하지 않음
+        if re.match(r"(?i)^\s*벌점\s*[*＊]?\s*해당없음\s*[*＊]?\s*$", ln2):
+            break
         if re.match(r"^\d{4}\.\d{2}\.\d{2}", ln2):
             if buf.strip():
                 logical_lines.append(buf.strip())
@@ -2194,6 +2499,15 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
         except Exception:
             pass
 
+        # // [수정] 멀티라인 추론 이후: 수여기관 칸의 '표창' 등 종류 파편 제거(추론은 위에서 이미 수행됨)
+        try:
+            for a in awards or []:
+                inst = str(a.get("수여기관") or "").strip()
+                typ = str(a.get("종류및근거") or "").strip()
+                a["수여기관"] = _sanitize_award_institution_field(inst, typ)
+        except Exception:
+            pass
+
         # FIX: '해당없음'은 상훈 자체가 없을 때만 1행으로 유지해야 한다.
         #      실제 상훈이 존재하는데도 표/텍스트 경로에서 '해당없음' 행이 섞이면 과대 파싱으로 이어진다.
         has_real = any(
@@ -2212,6 +2526,8 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
             for a in awards or []:
                 inst = str(a.get("수여기관") or "").replace("\n", " ").strip()
                 typ = str(a.get("종류및근거") or "").replace("\n", " ").strip()
+                inst = _sanitize_award_institution_field(inst, typ)
+                a["수여기관"] = inst
                 if not typ:
                     continue
                 if inst:
@@ -2360,11 +2676,32 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
             # 원래 순서(날짜순) 등으로 재정렬할 수도 있지만, 최종적으로는 parse_page_1 등에서 정렬하므로 유지
             awards = cleaned
 
+        # // [수정] 서로 다른 수여일 행 간 '종류및근거' 꼬리 덧붙임 제거(2패스로 연쇄 잔여 완화)
+        try:
+            _dedupe_award_type_suffix_bleed(awards)
+            _dedupe_award_type_suffix_bleed(awards)
+        except Exception:
+            pass
+
+        # // [수정] 동일 종류 문자열이 N개 날짜 행에 그대로 붙은(병합셀) 케이스: 블록을 N등분
+        try:
+            _redistribute_award_types_when_merged_cell_duplicated(awards)
+        except Exception:
+            pass
+
+        # // [수정] 수여기관 세로 병합으로 첫 행만 두 기관명이 붙은 케이스
+        try:
+            _split_merged_award_institution_pair(awards)
+        except Exception:
+            pass
+
         # 최종 정리(마지막 단계): 종류및근거 앞의 기관명 오염 제거
         try:
             for a in awards or []:
                 inst = str(a.get("수여기관") or "").replace("\n", " ").strip()
                 typ = str(a.get("종류및근거") or "").replace("\n", " ").strip()
+                inst = _sanitize_award_institution_field(inst, typ)
+                a["수여기관"] = inst
                 if not typ:
                     continue
                 if inst:
@@ -2379,6 +2716,11 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                 typ = re.sub(r"\s+", " ", typ).strip()
                 typ = _normalize_award_type_text(typ)
                 a["종류및근거"] = typ
+        except Exception:
+            pass
+
+        try:
+            _dedupe_award_rows_same_date_identical_typ(awards)
         except Exception:
             pass
 

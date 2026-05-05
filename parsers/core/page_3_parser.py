@@ -10,8 +10,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from typing import Any, Dict, List, Optional, Sequence
 import re
-import json
-import time
 from datetime import datetime
 
 from parsers.utils.page_2_flow_utils import (
@@ -20,6 +18,7 @@ from parsers.utils.page_2_flow_utils import (
 )
 from parsers.tech_career_common import _is_annotation_or_footnote_line
 from parsers.document_context import DocumentContext
+from parsers.utils.logger import agent_debug_log as _agent_log
 from parsers.table_settings import LINE_TABLE_SETTINGS, VIRTUAL_LEFT_X, VIRTUAL_RIGHT_X, extract_tables_merged, pick_best_table, safe_extract_tables
 from parsers.table_career_parser import (
     find_header_start_row,
@@ -29,29 +28,6 @@ from parsers.table_career_parser import (
     normalize_table_to_6cols,
     parse_period_cell,
 )
-
-# region agent log
-_AGENT_DEBUG_LOG_PATH = "debug-dcc858.log"
-_AGENT_DEBUG_SESSION_ID = "dcc858"
-
-
-def _agent_log(*, run_id: str, hypothesis_id: str, location: str, message: str, data: dict) -> None:
-    try:
-        payload = {
-            "sessionId": _AGENT_DEBUG_SESSION_ID,
-            "runId": run_id,
-            "hypothesisId": hypothesis_id,
-            "location": location,
-            "message": message,
-            "data": data or {},
-            "timestamp": int(time.time() * 1000),
-        }
-        with open(_AGENT_DEBUG_LOG_PATH, "a", encoding="utf-8") as f:
-            f.write(json.dumps(payload, ensure_ascii=False) + "\n")
-    except Exception:
-        return
-
-# endregion agent log
 
 _DATE_RE = re.compile(r"^\d{4}\.\d{2}(?:\.\d{2})?$")
 _DAYS_RE = re.compile(r"^\(?\s*(\d[\d,]*)\s*일\s*\)?$")

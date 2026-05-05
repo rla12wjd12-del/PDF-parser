@@ -23,6 +23,9 @@ from parsers.tech_career_common import (
     merge_cross_page_tech_overviews,
     _strip_tail_job_duty,
     _is_footer_or_header_line,
+    normalize_specialty_field,  # // [수정]
+    normalize_duty_field,  # // [수정]
+    normalize_worktype_field,  # // [수정]
 )
 from parsers.page_3_parser import (
     parse_page_3,
@@ -977,6 +980,20 @@ def parse_full_document(pdf_path: str) -> dict:
                     new_wt = _normalize_worktype_from_project_name(nm, wt)
                     if new_wt and new_wt != wt:
                         row["공사종류"] = new_wt
+                    # // [수정] 필드목록(노란표기) 기반: 전문분야/담당업무/공사종류 공백·오염 정리
+                    try:
+                        row["전문분야"] = normalize_specialty_field(row.get("전문분야") or "")
+                    except Exception:
+                        pass
+                    try:
+                        row["담당업무"] = normalize_duty_field(row.get("담당업무") or "")
+                    except Exception:
+                        pass
+                    try:
+                        # worktype은 위에서 추론/보정했으므로 마지막에 공백만 정리
+                        row["공사종류"] = normalize_worktype_field(row.get("공사종류") or "")
+                    except Exception:
+                        pass
 
             # 4. 요약 페이지 파싱 (분야별 참여기간 인정일)
             print(f"\n[4/4] 요약 페이지 파싱 시작...")
