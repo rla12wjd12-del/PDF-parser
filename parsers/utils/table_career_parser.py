@@ -15,6 +15,8 @@ from dataclasses import dataclass
 import re
 from typing import Any, Iterable, Iterator, Sequence
 
+from parsers.utils.tech_career_common import _collapse_linebreaks
+
 
 _DATE_FULL = re.compile(r"^\s*(\d{4})\.(\d{2})\.(\d{2})\s*$")
 # NOTE:
@@ -30,7 +32,8 @@ _DAYS_PAREN = re.compile(r"\(\s*(\d[\d,]*)\s*일\s*\)")
 def _cell_str(v: Any) -> str:
     if v is None:
         return ""
-    return str(v).replace("\r\n", "\n").replace("\r", "\n").strip()
+    s = _collapse_linebreaks(str(v))
+    return re.sub(r"[ \t]+", " ", s).strip()
 
 
 def _row_is_empty(row: Sequence[Any] | None) -> bool:

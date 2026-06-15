@@ -50,8 +50,46 @@ _DUTY_TAIL_AFTER_STAR = (
 )
 
 
+def _is_hangul_char(ch: str) -> bool:
+    if not ch:
+        return False
+    code = ord(ch)
+    return 0xAC00 <= code <= 0xD7A3
+
+
+def _smart_concat(a: str, b: str) -> str:
+    """PDF 줄바꿈으로 쪼개진 조각을 이을 때, 한글 단어 중간에는 공백을 넣지 않는다."""
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if not a:
+        return b
+    if not b:
+        return a
+    if _is_hangul_char(a[-1]) and _is_hangul_char(b[0]) and not a.endswith((")", " ")):
+        return a + b
+    return a + " " + b
+
+
+def _collapse_linebreaks(s: str) -> str:
+    """
+    셀/필드 내 줄바꿈을 제거한다.
+    줄 경계에 공백이 있어도 한글 단어 중간이면 공백 없이 이어붙인다.
+    """
+    s = (s or "").replace("\u00A0", " ").replace("\r\n", "\n").replace("\r", "\n")
+    if "\n" not in s:
+        return s
+    parts = [p.strip() for p in s.split("\n") if p.strip()]
+    if not parts:
+        return ""
+    acc = parts[0]
+    for part in parts[1:]:
+        acc = _smart_concat(acc, part)
+    return acc
+
+
 def _norm_space(s: str) -> str:
-    return re.sub(r"\s+", " ", (s or "").replace("\u00A0", " ").strip())
+    s = _collapse_linebreaks(s or "")
+    return re.sub(r"[ \t]+", " ", s).strip()
 
 
 def _ocr_fix_specialty(s: str) -> str:

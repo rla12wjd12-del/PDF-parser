@@ -967,6 +967,82 @@ def _yyyy_mm_dd_to_iso(date_str: str) -> str:
     return s
 
 
+# 주소(인적사항) 다음에 이어질 수 있는 다른 항목 라벨/섹션 키워드.
+# - 주소를 추출할 때 이 라벨들 앞에서 멈춰 '관리번호' 등 다른 값이 섞이지 않게 한다.
+_ADDR_BOUNDARY_KEYWORDS = (
+    "설계·시공", "설계시공",
+    "건설사업관리", "품질관리",
+    "관리번호", "성명", "생년월일", "서류출력일자", "발급",
+    "연락처", "전화번호", "전화", "휴대전화", "휴대", "전자우편", "이메일",
+    "등급", "국가기술자격", "학력", "교육훈련", "상훈", "벌점", "제재", "근무처",
+)
+
+# 발급일('YYYY년 M월 D일')이 주소 뒤에 붙는 추출 케이스 대비
+_ADDR_BOUNDARY_RE = (
+    r"(?=\s+(?:"
+    + "|".join(_ADDR_BOUNDARY_KEYWORDS)
+    + r"|\d{4}\s*년\s*\d{1,2}\s*월)|$)"
+)
+_ADDR_RE = re.compile(r"주소\s+(.+?)" + _ADDR_BOUNDARY_RE)
+
+
+def _dedupe_repeated_address_text(s: str) -> str:
+    """
+    PDF 텍스트 레이어 중복 추출로 주소 내용이 통째로 반복되는 경우 1회로 축약한다.
+    - 토큰 기준: 'A A B' → 'A B' (앞쪽 반복 블록 제거)
+    - 공백 없는 한글 주소: '서울강남서울강남' → '서울강남'
+    """
+    tokens = (s or "").split()
+    m = len(tokens)
+    for k in range(m // 2, 0, -1):
+        if tokens[:k] == tokens[k : 2 * k]:
+            tokens = tokens[k:]
+            break
+    s2 = " ".join(tokens)
+    if " " not in s2:
+        n = len(s2)
+        if n >= 6 and n % 2 == 0 and s2[: n // 2] == s2[n // 2 :]:
+            return s2[: n // 2]
+    return s2
+
+
+def _clean_personal_address(raw: str) -> str:
+    """
+    인적사항 '주소' 값 정제.
+    - 주소 뒤에 섞여 들어온 다른 항목 라벨(관리번호/성명/생년월일 등) 이후 절단
+    - 끝에 붙은 관리번호류(#숫자 / 공백 분리된 긴 숫자 블록) 제거
+    - 중복 추출된 내용 축약
+    """
+    s = re.sub(r"\s+", " ", str(raw or "")).strip()
+    if not s:
+        return ""
+    # 주소 뒤에 다른 항목 라벨이 섞여 들어온 경우 라벨 앞에서 절단
+    s = re.split(
+        r"\s*(?:관리번호|성명|생년월일|서류출력일자|발급|연락처|전화|휴대|전자우편|이메일)",
+        s,
+        maxsplit=1,
+    )[0].strip()
+    # 중복 추출로 값 중간에 '주소' 라벨이 다시 등장하면 제거(주소 값에는 '주소'가 없음)
+    s = re.sub(r"\s*주소\s*", " ", s).strip()
+    # 끝에 붙은 관리번호류 제거:
+    #  - '#' 접두 숫자, 공백 분리된 단일 숫자 5개 이상(예: '4 1 0 0 0 4 4 8'),
+    #    또는 6자리 이상 붙은 숫자. (건물번호 '123' 등 짧은 숫자는 보존)
+    s = re.sub(r"\s*#\s*(?:\d\s*){4,}$", "", s).strip()
+    s = re.sub(r"(?:^|\s)(?:\d\s+){4,}\d\s*$", "", s).strip()
+    s = re.sub(r"\s\d{6,}\s*$", "", s).strip()
+    # 통째로 반복 추출된 내용 축약
+    s = _dedupe_repeated_address_text(re.sub(r"\s+", " ", s))
+    return s.strip(" ,/")
+
+
+def _extract_personal_address(text_normalized: str) -> str:
+    """정규화된 텍스트에서 '주소' 라벨 이후 값을 추출·정제해 반환."""
+    m = _ADDR_RE.search(text_normalized or "")
+    if not m:
+        return ""
+    return _clean_personal_address(m.group(1))
+
+
 def _yyyy_mm_to_iso(date_str: str) -> str:
     """
     'YYYY.MM'를 'YYYY-MM-01'로 변환.
@@ -1694,18 +1770,7 @@ def parse_personal_info_from_table(rows: List[List[str]]) -> Dict[str, Any]:
             out["서류출력일자"] = datetime(yyyy, mm, dd).strftime("%Y-%m-%d")
         except ValueError:
             out["서류출력일자"] = ""
-    addr_match = re.search(
-        r"주소\s+(.+?)(?=\s+(?:"
-        r"설계·시공|설계시공|"
-        r"건설사업관리|"
-        r"품질관리|"
-        r"연락처|전화번호|전화|휴대전화|휴대|전자우편|이메일|"
-        r"등급|국가기술자격|학력|교육훈련|상훈|벌점|제재|근무처"
-        r")|$)",
-        text_normalized,
-    )
-    if addr_match:
-        out["인적사항"]["주소"] = addr_match.group(1).strip()
+    out["인적사항"]["주소"] = _extract_personal_address(text_normalized)
     return out
 
 
@@ -2146,19 +2211,8 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
             except ValueError:
                 result['서류출력일자'] = ""
 
-        # 주소 파싱: "주소" 라벨 이후 다음 섹션 키워드 전까지
-        addr_match = re.search(
-            r'주소\s+(.+?)(?=\s+(?:'
-            r'설계·시공|설계시공|'
-            r'건설사업관리|'
-            r'품질관리|'
-            r'연락처|전화번호|전화|휴대전화|휴대|전자우편|이메일|'
-            r'등급|국가기술자격|학력|교육훈련|상훈|벌점|제재|근무처'
-            r')|$)',
-            text_normalized
-        )
-        if addr_match:
-            result['인적사항']['주소'] = addr_match.group(1).strip()
+        # 주소 파싱: "주소" 라벨 이후 다음 항목/섹션 라벨 전까지(관리번호 등 혼입 방지, 중복 제거)
+        result['인적사항']['주소'] = _extract_personal_address(text_normalized)
 
         result["등급"] = _parse_grade_dict_from_normalized_text(text_normalized)
         

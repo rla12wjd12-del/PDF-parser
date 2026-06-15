@@ -642,6 +642,32 @@ def count_pdf_items(ctx: DocumentContext, tech_start: int, cm_start: int,
     }
 
 
+def _squash_newlines_in_obj(obj):
+    """
+    문자열 내 줄바꿈을 제거한다.
+    줄바꿈을 공백으로 치환하면 '한탄강\\n주상절리' → '한탄강 주상절리'처럼
+    불필요한 공백이 남을 수 있어, 줄바꿈과 주변 공백을 통째로 제거한다.
+    """
+    if isinstance(obj, str):
+        if ("\n" not in obj) and ("\r" not in obj):
+            return obj
+        s = re.sub(r"[ \t]*\r?\n[ \t]*", "", obj)
+        s = re.sub(r"[ \t]+", " ", s).strip()
+        return s
+    if isinstance(obj, list):
+        return [_squash_newlines_in_obj(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _squash_newlines_in_obj(v) for k, v in obj.items()}
+    return obj
+
+
+def _squash_career_section_newlines(result: dict) -> None:
+    """기술경력/CM 경력 결과에서 줄바꿈 잔여물을 한 줄로 정리한다."""
+    for key in ("기술경력", "건설사업관리및감리경력"):
+        if isinstance(result.get(key), list):
+            result[key] = _squash_newlines_in_obj(result[key])
+
+
 def parse_full_document(pdf_path: str) -> dict:
     """
     전체 PDF 문서 파싱
@@ -1147,7 +1173,9 @@ def parse_full_document(pdf_path: str) -> dict:
     print(f"\n{'='*60}")
     print("[OK] 전체 파싱 완료")
     print(f"{'='*60}\n")
-    
+
+    _squash_career_section_newlines(result)
+
     return result
 
 
@@ -1350,25 +1378,7 @@ def main():
         return 0
 
     # 기술경력/건설사업관리및감리경력: 문자열 내 줄바꿈 제거 후 저장
-    # - 파서 내부에서 가독성을 위해 '\n'로 누적하는 필드(개요/적용공법/비고 등)가 있어
-    #   JSON 저장 시에는 줄바꿈을 공백으로 치환해 한 줄로 정리한다.
-    def _squash_newlines_in_obj(obj):
-        if isinstance(obj, str):
-            if ("\n" not in obj) and ("\r" not in obj):
-                return obj
-            # 줄바꿈은 "공백으로 치환"하면 줄바꿈 자리에 불필요한 공백 1칸이 남을 수 있어
-            # 줄바꿈 + 앞뒤 공백까지 통째로 제거한다.
-            # 예) "A\nB" -> "AB", "A \n B" -> "AB"
-            s = re.sub(r"[ \t]*\r?\n[ \t]*", "", obj)
-            # 남아있는 공백/탭은 1칸으로 정리
-            s = re.sub(r"[ \t]+", " ", s).strip()
-            return s
-        if isinstance(obj, list):
-            return [_squash_newlines_in_obj(v) for v in obj]
-        if isinstance(obj, dict):
-            return {k: _squash_newlines_in_obj(v) for k, v in obj.items()}
-        return obj
-
+    # - parse_full_document에서도 동일 정책을 적용하지만, CLI 저장 경로에서 한 번 더 보장한다.
     def _parse_one_pdf(pdf_path: str, *, out_dir: Path | None = None) -> int:
         # PDF 파일 존재 확인
         if not pdf_path or not Path(pdf_path).exists():
@@ -1385,10 +1395,6 @@ def main():
 
         # PDF 파싱
         result = parse_full_document(pdf_path)
-
-        for _k in ["기술경력", "건설사업관리및감리경력"]:
-            if isinstance(result.get(_k), list):
-                result[_k] = _squash_newlines_in_obj(result[_k])
 
         # JSON 파일로 저장
         JSON_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
