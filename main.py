@@ -924,53 +924,7 @@ def parse_full_document(pdf_path: str) -> dict:
                         nm3 = re.sub(r"\s+", " ", nm3).strip()
                         row["사업명"] = nm3
 
-            # 공사종류 보정: 일부 문서에서 공사종류가 이전 행 컨텍스트로 밀리는 사례가 있어
-            # 사업명 키워드(도로/상수도/하수도 등)로 최소한의 교정을 수행한다.
-            def _normalize_worktype_from_project_name(
-                project_name: str, current_worktype: str
-            ) -> str:
-                name = re.sub(r"\s+", "", str(project_name or ""))
-                cur = str(current_worktype or "").strip()
-                cur_n = re.sub(r"\s+", "", cur)
-                if not name:
-                    return cur
-
-                def _has_any(s: str, needles: list[str]) -> bool:
-                    return any(n in s for n in needles)
-
-                # 상하수도(복합): 사업명에 상하수도가 명시된 경우 단일 분류로 두면 오해 소지가 커
-                # 가장 보수적으로 '상수도,하수도'로 통일한다.
-                if "상하수도" in name:
-                    if ("상수도" not in cur_n) or ("하수" not in cur_n):
-                        return "상수도,하수도"
-
-                # 상수도/정수장
-                if "정수장" in name and ("정수장" not in cur_n):
-                    return "상수도(정수장)"
-                if _has_any(name, ["상수도", "광역상수도", "급수", "배수지"]) and ("상수도" not in cur_n):
-                    return "상수도"
-                # 하수도
-                if _has_any(name, ["하수도", "하수처리", "하수관로"]) and ("하수" not in cur_n):
-                    return "하수도"
-                # 하천/골재
-                if _has_any(name, ["하천", "골재", "부존량", "준설"]) and ("하천" not in cur_n):
-                    return "하천"
-                # 도로/교량
-                if _has_any(name, ["고속도로", "국도", "지방도", "도로"]) and not _has_any(
-                    cur_n, ["고속도로", "국도", "지방도", "도로"]
-                ):
-                    # 교량 키워드가 함께 있으면 조합으로 보강
-                    if "교" in name or "교량" in name:
-                        return "도로,교량"
-                    return "도로"
-                # 철도
-                if "철도" in name and ("철도" not in cur_n):
-                    return "철도"
-                # 항만
-                if "항만" in name and ("항만" not in cur_n):
-                    return "항만"
-                return cur
-
+            # 공사종류: PDF 표에서 추출한 값만 사용한다(사업명·발주자 기반 추론/보정 없음).
             for section_key in ["기술경력", "건설사업관리및감리경력"]:
                 rows = result.get(section_key) or []
                 if not isinstance(rows, list):
@@ -978,34 +932,6 @@ def parse_full_document(pdf_path: str) -> dict:
                 for row in rows:
                     if not isinstance(row, dict):
                         continue
-                    nm = str(row.get("사업명") or "").strip()
-                    if not nm:
-                        continue
-                    # 발주자/공사종류 필드 밀림 보정:
-                    # 발주자 칸에 '고속도로/국도/도로/상수도/하수도...' 같은 공사종류 토큰이 들어가고
-                    # 공사종류가 비어있는 경우가 실제로 관측됨 → 공사종류로 이동.
-                    issuer = str(row.get("발주자") or "").strip()
-                    wt = str(row.get("공사종류") or "").strip()
-                    if issuer and (not wt):
-                        if issuer in {
-                            "고속도로",
-                            "국도",
-                            "지방도",
-                            "도로",
-                            "상수도",
-                            "하수도",
-                            "하천",
-                            "항만",
-                            "철도",
-                            "교량",
-                            "공원",
-                        }:
-                            row["공사종류"] = issuer
-                            row["발주자"] = ""
-                            wt = issuer
-                    new_wt = _normalize_worktype_from_project_name(nm, wt)
-                    if new_wt and new_wt != wt:
-                        row["공사종류"] = new_wt
                     # // [수정] 필드목록(노란표기) 기반: 전문분야/담당업무/공사종류 공백·오염 정리
                     try:
                         row["전문분야"] = normalize_specialty_field(row.get("전문분야") or "")
@@ -1016,7 +942,6 @@ def parse_full_document(pdf_path: str) -> dict:
                     except Exception:
                         pass
                     try:
-                        # worktype은 위에서 추론/보정했으므로 마지막에 공백만 정리
                         row["공사종류"] = normalize_worktype_field(row.get("공사종류") or "")
                     except Exception:
                         pass
