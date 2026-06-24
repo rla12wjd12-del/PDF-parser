@@ -97,6 +97,29 @@ def _squash_spaces_inside_parentheses(s: str) -> str:
     return "".join(out)
 
 
+# 교육훈련 행 복원 시 continuation에서 제외할 페이지 머리말/설명/섹션 라벨 조각.
+# (과정명 셀에 끌려 들어가 오염시키는 텍스트를 차단)
+_TRAINING_SKIP_SNIPPETS = (
+    "본 증명서는",
+    "문서확인번호",
+    "발급번호",
+    "관리번호",
+    "■ 건설기술",
+    "Page :",
+    "의무교육",
+    "계속교육",
+    "홈페이지",
+    "위·변조",
+)
+
+# 교육훈련 표 바로 뒤에 오는 상훈/벌점·제재 섹션 헤더 키워드.
+# 이 라인을 만나면 표가 끝난 것으로 보고 행 버퍼를 flush한다.
+_TRAINING_SECTION_END_KEYWORDS = ("수여일", "수여기관", "상훈", "벌점", "제재")
+
+# 교육인정여부 고정 어휘. (행 복원 시 인정여부 키워드가 줄바꿈 과정명 잔여에 흡수되지 않도록 보호)
+_RECOGNITION_KEYWORDS = ("건설사업관리", "설계·시공", "품질관리")
+
+
 def _extract_training_rows_from_text(combined_text: str) -> list[str]:
     """
     교육훈련 표의 '한 행'을 복원한다.
@@ -145,6 +168,14 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
     stop_all = False
     for ln0 in lines:
         for ln in _split_embedded_rows(ln0):
+            # 세로 라벨 '교육훈련'이 같은 y좌표 라인 앞에 붙어 추출되는 경우가 있다.
+            # (예: "교육훈련 5시간)", "교육훈련 리]과정", "교육훈련 교육기간 ...")
+            # 라벨만 제거하고 뒤따르는 실제 내용(과정명 잔여/헤더 등)은 보존한다.
+            # 단독 라벨이면 빈 문자열이 되어 건너뛴다.
+            ln = re.sub(r"^교육훈련\s*", "", ln).strip()
+            if not ln:
+                continue
+
             # 페이지마다 헤더가 반복되므로, 헤더를 만나면 그 이후부터 다시 테이블 파싱을 시작한다.
             if "교육기간" in ln and "과정명" in ln and "교육기관명" in ln:
                 # 진행 중이던 행이 있으면 flush
@@ -175,6 +206,15 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
                 in_table = False
                 continue
 
+            # 상훈/벌점·제재 섹션 헤더를 만나면 교육훈련 표가 끝난 것으로 본다.
+            # (헤더 텍스트가 마지막 교육훈련 행에 끌려 들어가 과정명/인정여부를 오염시키는 문제 방지)
+            if any(kw in ln for kw in _TRAINING_SECTION_END_KEYWORDS):
+                if buf:
+                    rows.append(_join_training_row_buf(buf))
+                    buf = []
+                in_table = False
+                continue
+
             # 근무처 영역으로 넘어가면, 이번 페이지의 교육훈련 표는 끝난 것으로 보고 대기 상태로 전환.
             if workplace_like_pat.match(ln) or "근무기간" in ln or ln == "근무처":
                 if buf:
@@ -192,21 +232,15 @@ def _extract_training_rows_from_text(combined_text: str) -> list[str]:
 
             if buf:
                 # 페이지 헤더/설명 문구는 continuation에서 제외(과정명 오염 방지)
-                skip_snippets = [
-                    "본 증명서는",
-                    "문서확인번호",
-                    "발급번호",
-                    "관리번호",
-                    "■ 건설기술",
-                    "Page :",
-                    "의무교육",
-                    "계속교육",
-                    "홈페이지",
-                    "위·변조",
-                ]
-                if any(snip in ln for snip in skip_snippets):
+                if any(snip in ln for snip in _TRAINING_SKIP_SNIPPETS):
                     continue
                 buf.append(ln)
+            elif rows and not row_start_pat.match(ln):
+                # 과정명 셀이 페이지 경계에서 줄바꿈되면, 잔여 조각이 다음 페이지의 표 헤더 직후
+                # (현재 행 버퍼가 빈 상태)에 단독 라인으로 나타난다. 이전 페이지의 마지막 행에 이어붙인다.
+                if any(snip in ln for snip in _TRAINING_SKIP_SNIPPETS):
+                    continue
+                rows[-1] = _append_training_continuation(rows[-1], ln)
 
         if stop_all:
             break
@@ -235,14 +269,33 @@ def _smart_concat(a: str, b: str) -> str:
     return a + " " + b
 
 
+def _append_training_continuation(acc: str, part: str) -> str:
+    """교육훈련 행에 줄바꿈/페이지 경계로 분리된 과정명 잔여 조각을 이어붙인다.
+
+    선형 텍스트 추출 순서상 과정명 셀의 2번째 줄은 [기관명][교육인정여부] 뒤에 와서,
+    직전 누적 텍스트가 교육인정여부 키워드로 끝나는 경우가 있다. 이때 _smart_concat으로
+    한글끼리 공백 없이 붙이면 "건설사업관리"+"교육" → "건설사업관리교육"이 되어
+    교육인정여부 토큰 인식이 깨진다. 키워드로 끝나면 공백을 유지해 토큰 경계를 보존한다.
+    """
+    acc = (acc or "").strip()
+    part = (part or "").strip()
+    if not part:
+        return acc
+    if not acc:
+        return part
+    if any(acc.endswith(kw) for kw in _RECOGNITION_KEYWORDS):
+        return acc + " " + part
+    return _smart_concat(acc, part)
+
+
 def _join_training_row_buf(buf: list[str]) -> str:
     # [수정] 동일 표 행이 PDF 줄바꿈으로 쪼개질 때 " ".join을 쓰면 셀 내부 한글이 단어 한가운데에서
-    # 끊긴 것처럼 보이는 불필요 공백이 생긴다. 줄 단위 trim 후 경계마다 _smart_concat으로 이어붙인다.
+    # 끊긴 것처럼 보이는 불필요 공백이 생긴다. 줄 단위 trim 후 경계마다 이어붙인다.
     if not buf:
         return ""
     acc = (buf[0] or "").strip()
     for part in buf[1:]:
-        acc = _smart_concat(acc, (part or "").strip())
+        acc = _append_training_continuation(acc, (part or "").strip())
     return acc.strip()
 
 
@@ -649,6 +702,37 @@ def _parse_workplace_body_lines(body_lines: list[str]) -> list[dict]:
                 })
             i += 1
             continue
+
+        # 추출 편차로 한 행이 "시작 ~ 종료 상호"(완결형 기간)를 1~2세트로 한 줄에
+        # 담아 내려오는 경우가 있다. 특히 '근무기간'이 'YYYY.MM'(년·월)만으로 표기된
+        # 행에서 자주 발생한다.
+        #   예) "1989.02 ~ 1990.08 대한엔지니어링(주) 1990.09.01 ~ 1991.11.30 신화건설"
+        # 이때 아래 start_row_pat은 비탐욕 상호 그룹이 '종료일'까지 흡수해
+        #   l_co="1990.08 대한엔지니어링(주)" 처럼 종료일이 상호에 붙는 오파싱이 난다.
+        # → 라인이 '완결형 기간'으로 시작하면 기간 토큰 단위로 직접 분해한다
+        #   (YYYY.MM / YYYY.MM.DD / 근무중 모두 지원, 좌·우 2세트 자동 처리).
+        if re.match(rf"^{_DATE}\s*~\s*(?:{_DATE}|근\s*무\s*중)", ln):
+            periods = list(re.finditer(rf"({_DATE})\s*~\s*({_DATE}|근\s*무\s*중)", ln))
+            if periods:
+                emitted = False
+                for idx, pm in enumerate(periods):
+                    nxt = periods[idx + 1].start() if idx + 1 < len(periods) else len(ln)
+                    company_raw = ln[pm.end():nxt].strip()
+                    # 마지막 기간 뒤에 종료일 없는 '시작 ~'(다음 줄로 이어지는) 잔여가 붙으면 제거
+                    company_raw = re.sub(rf"\s*{_DATE}\s*~\s*$", "", company_raw).strip()
+                    if not company_raw:
+                        continue
+                    prev, curr = _normalize_company(company_raw)
+                    out.append({
+                        "근무기간_시작": _workplace_date_to_iso(pm.group(1)),
+                        "근무기간_종료": _end_value(pm.group(2)),
+                        "이전_상호명": prev,
+                        "현재_상호명": curr,
+                    })
+                    emitted = True
+                if emitted:
+                    i += 1
+                    continue
 
         m = start_row_pat.search(ln)
         if m:

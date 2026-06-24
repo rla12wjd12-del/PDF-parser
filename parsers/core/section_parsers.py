@@ -735,6 +735,16 @@ def _split_merged_award_triples(
             cur = (cur + " " + ln).strip()
     if cur:
         type_lines.append(cur)
+
+    # [수정] 셀 추출 과정에서 줄바꿈이 공백으로 합쳐져 한 줄에 여러 상훈 블록이 들어온 경우
+    # (예: '표창장[제2729호] 표창장[제100호] …'), 마지막 한 줄을 모든 날짜에 broadcast하면
+    # 종류및근거가 전부 동일 블록으로 오염된다. 괄호 블록 수가 날짜 수와 정확히 일치할 때만
+    # 원래 시각 순서대로 블록을 재분리해 날짜에 1:1 매핑한다.
+    if len(type_lines) < len(dates):
+        blocks = _extract_award_type_bracket_blocks(" ".join(type_lines))
+        if len(blocks) == len(dates):
+            type_lines = blocks
+
     out: List[tuple[str, str, str]] = []
     for idx, d in enumerate(dates):
         inst = inst_lines[idx] if idx < len(inst_lines) else (inst_lines[-1] if inst_lines else "")
