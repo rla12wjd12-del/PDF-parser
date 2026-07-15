@@ -92,6 +92,31 @@ def _norm_space(s: str) -> str:
     return re.sub(r"[ \t]+", " ", s).strip()
 
 
+def _squash_spaces_inside_parentheses(s: str) -> str:
+    """
+    괄호 내부에서만 공백/탭/줄바꿈을 제거한다.
+    예: '건설사업관리(감독권한 대행)' → '건설사업관리(감독권한대행)'
+    (PDF 추출기가 좁은 셀·글자 간격을 단어 경계로 오인해 넣은 공백 복원)
+    """
+    if not s:
+        return ""
+    out: list[str] = []
+    depth = 0
+    for ch in s:
+        if ch == "(":
+            depth += 1
+            out.append(ch)
+            continue
+        if ch == ")":
+            depth = max(0, depth - 1)
+            out.append(ch)
+            continue
+        if depth > 0 and ch.isspace():
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
 def _ocr_fix_specialty(s: str) -> str:
     # '입식 흙맑이'가 '립식'으로 깨지는 OCR
     return (s or "").replace("립식", "입식")
@@ -204,11 +229,13 @@ def normalize_duty_field(raw: str) -> str:
     """
     // [수정] '담당업무' 정규화.
     - 줄바꿈/공백 정리
+    - 괄호 내부 공백 제거(예: '(감독권한 대행)' → '(감독권한대행)')
     - 괄호가 열린 채로 끝나는 경우 ')' 보강(예: '(분야책임기술인')
     """
     s = _norm_space(str(raw or ""))
     if not s:
         return ""
+    s = _squash_spaces_inside_parentheses(s)
     # 괄호 불균형 보정(최소 침습)
     if s.count("(") > s.count(")"):
         s = s + ")"

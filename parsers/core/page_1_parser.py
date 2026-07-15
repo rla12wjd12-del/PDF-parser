@@ -1027,6 +1027,61 @@ def _yy_mm_dd_to_iso(date_str: str) -> str:
     return dt.strftime("%Y-%m-%d")
 
 
+_DATE_KO_RE = re.compile(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일")
+
+
+def _format_ko_date_ymd(yyyy: int, mm: int, dd: int) -> str:
+    try:
+        return datetime(yyyy, mm, dd).strftime("%Y-%m-%d")
+    except ValueError:
+        return ""
+
+
+def _extract_document_issue_date(text: str) -> str:
+    """
+    경력증명서 1페이지 우측 상단 출력일자(서류출력일자) 추출.
+
+    위치: 「건설기술 진흥법 시행규칙」…확인합니다. 아래,
+    한국건설엔지니어링협회장 위의 'YYYY년 MM월 DD일'.
+    없거나 파싱 실패 시 빈 문자열(호출측에서 오류 없이 처리).
+    """
+    tn = re.sub(r"\s+", " ", str(text or "")).strip()
+    if not tn:
+        return ""
+
+    # 1) 확인합니다 ~ 협회장 사이 (가장 정확)
+    anchored = re.search(
+        r"확인합니다\.?\s*"
+        r"(?:(?!\d{4}\s*년).){0,120}?"
+        r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일"
+        r".{0,120}?"
+        r"(?:한국건설엔지니어링협회|건설엔지니어링협회장|협회장)",
+        tn,
+    )
+    if not anchored:
+        # 2) 협회장 직전 한글 날짜
+        anchored = re.search(
+            r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일"
+            r".{0,80}?"
+            r"(?:한국건설엔지니어링협회|건설엔지니어링협회장|협회장)",
+            tn,
+        )
+    if not anchored:
+        # 3) 진흥법 시행규칙 문구 이후 첫 한글 날짜
+        law = re.search(r"건설기술\s*진흥법\s*시행규칙", tn)
+        if law:
+            anchored = _DATE_KO_RE.search(tn, law.end())
+
+    if anchored:
+        return _format_ko_date_ymd(*map(int, anchored.groups()[:3]))
+
+    # 4) 폴백: 문서 상단(앞 900자)의 첫 한글 날짜 — 본문 다른 날짜와 혼동 방지
+    m = _DATE_KO_RE.search(tn[:900])
+    if m:
+        return _format_ko_date_ymd(*map(int, m.groups()))
+    return ""
+
+
 def _yyyy_mm_dd_to_iso(date_str: str) -> str:
     """
     '2001.12.26' 또는 '2001-12-26'을 '2001-12-26'으로 통일.
@@ -1847,13 +1902,8 @@ def parse_personal_info_from_table(rows: List[List[str]]) -> Dict[str, Any]:
     birth_match = re.search(r"생년월일\s+(\d{2}\.\d{2}\.\d{2})", text_normalized)
     if birth_match:
         out["인적사항"]["생년월일"] = _yy_mm_dd_to_iso(birth_match.group(1).strip())
-    issue_match = re.search(r"(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일", text_normalized)
-    if issue_match:
-        yyyy, mm, dd = map(int, issue_match.groups())
-        try:
-            out["서류출력일자"] = datetime(yyyy, mm, dd).strftime("%Y-%m-%d")
-        except ValueError:
-            out["서류출력일자"] = ""
+    # 표 텍스트에 헤더(출력일자)가 포함되는 경우만 채워짐 — 없으면 텍스트 파서가 보완
+    out["서류출력일자"] = _extract_document_issue_date(text_normalized)
     out["인적사항"]["주소"] = _extract_personal_address(text_normalized)
     return out
 
@@ -2032,7 +2082,8 @@ def _merge_page1_table_first_then_text(table_part: Dict[str, Any], text_part: Di
     if _personal_is_empty({"인적사항": out["인적사항"]}) and not _personal_is_empty(text_part):
         out["인적사항"] = dict(ep)
 
-    out["서류출력일자"] = (table_part.get("서류출력일자") or text_part.get("서류출력일자") or "").strip()
+    # 출력일자는 표 밖(우측 상단 직인 영역)에 있어 페이지 텍스트 결과를 우선한다.
+    out["서류출력일자"] = (text_part.get("서류출력일자") or table_part.get("서류출력일자") or "").strip()
 
     tg = table_part.get("등급") or {}
     eg = text_part.get("등급") or {}
@@ -2286,14 +2337,8 @@ def parse_page_1_from_text(combined_text: str) -> Dict[str, Any]:
         if birth_match:
             result['인적사항']['생년월일'] = _yy_mm_dd_to_iso(birth_match.group(1).strip())
 
-        # 서류 출력일자(발급/출력일) 파싱: 보통 1페이지 상단의 'YYYY년 M월 D일'
-        issue_match = re.search(r'(\d{4})\s*년\s*(\d{1,2})\s*월\s*(\d{1,2})\s*일', text_normalized)
-        if issue_match:
-            yyyy, mm, dd = map(int, issue_match.groups())
-            try:
-                result['서류출력일자'] = datetime(yyyy, mm, dd).strftime("%Y-%m-%d")
-            except ValueError:
-                result['서류출력일자'] = ""
+        # 서류 출력일자: 「건설기술 진흥법 시행규칙」…확인합니다. 아래 / 협회장 위
+        result['서류출력일자'] = _extract_document_issue_date(text_normalized)
 
         # 주소 파싱: "주소" 라벨 이후 다음 항목/섹션 라벨 전까지(관리번호 등 혼입 방지, 중복 제거)
         result['인적사항']['주소'] = _extract_personal_address(text_normalized)
