@@ -10,7 +10,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from parsers.page_2_parser import _parse_tilde_line, _cleanup_tech_career_job_noise_row
-from parsers.page_1_parser import _parse_training_row
+from parsers.page_1_parser import (
+    _parse_training_row,
+    parse_training_from_table,
+    _dedupe_training_records,
+)
 
 
 class TestParseTildeLine(unittest.TestCase):
@@ -211,6 +215,62 @@ class TestParseTrainingRow(unittest.TestCase):
         self.assertEqual(d.get("교육기간_종료"), "2023-08-14")
         self.assertIn("경복대학교", d.get("교육기관명", ""))
         self.assertEqual(d.get("교육인정여부"), "건설사업관리")
+
+
+class TestExpandVerticallyMergedTraining(unittest.TestCase):
+    """pdfplumber 세로 병합 셀 → 깨진 교육훈련 1행 회귀(임승빈 PDF 유형)."""
+
+    def test_expand_two_merged_training_rows(self):
+        rows = [
+            ["교육기간", "과정명", "교육기관명", "교육인정여부"],
+            [
+                "2001.03.19 ~ 2001.03.30\n2001.03.12 ~ 2001.03.16",
+                "기본교육과정(일반/감리)\n전문교육과정(일반/감리)",
+                "건설기술교육원\n건설기술교육원",
+                "",
+            ],
+        ]
+        parsed = parse_training_from_table(rows)
+        self.assertEqual(len(parsed), 2)
+        by_start = {p["교육기간_시작"]: p for p in parsed}
+        self.assertEqual(by_start["2001-03-19"]["과정명"], "기본교육과정(일반/감리)")
+        self.assertEqual(by_start["2001-03-19"]["교육기관명"], "건설기술교육원")
+        self.assertEqual(by_start["2001-03-12"]["과정명"], "전문교육과정(일반/감리)")
+        self.assertEqual(by_start["2001-03-12"]["교육기관명"], "건설기술교육원")
+        courses = {p["과정명"] for p in parsed}
+        self.assertNotIn(
+            "기본교육과정(일반/감리) 전문교육과정(일반/감리)",
+            courses,
+        )
+
+    def test_dedupe_drops_concatenated_artifact(self):
+        items = [
+            {
+                "교육기간_시작": "2001-03-12",
+                "교육기간_종료": "2001-03-16",
+                "과정명": "기본교육과정(일반/감리) 전문교육과정(일반/감리)",
+                "교육기관명": "건설기술교육원건설기술교육원",
+                "교육인정여부": "",
+            },
+            {
+                "교육기간_시작": "2001-03-19",
+                "교육기간_종료": "2001-03-30",
+                "과정명": "기본교육과정(일반/감리)",
+                "교육기관명": "건설기술교육원",
+                "교육인정여부": "",
+            },
+            {
+                "교육기간_시작": "2001-03-12",
+                "교육기간_종료": "2001-03-16",
+                "과정명": "전문교육과정(일반/감리)",
+                "교육기관명": "건설기술교육원",
+                "교육인정여부": "",
+            },
+        ]
+        out = _dedupe_training_records(items)
+        self.assertEqual(len(out), 2)
+        orgs = {p["교육기관명"] for p in out}
+        self.assertEqual(orgs, {"건설기술교육원"})
 
 
 if __name__ == "__main__":

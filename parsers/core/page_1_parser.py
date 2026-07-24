@@ -1696,6 +1696,126 @@ def split_multiline_cell(cell: str) -> List[str]:
     return [ln.strip() for ln in t.split("\n") if ln.strip()]
 
 
+_TRAINING_DATE_RANGE_RE = re.compile(r"\d{4}\.\d{2}\.\d{2}\s*~\s*\d{4}\.\d{2}\.\d{2}")
+
+
+def _expand_vertically_merged_training_rows(rows: List[List[str]]) -> List[List[str]]:
+    """pdfplumber 세로 병합 셀을 교육훈련 논리 행으로 펼친다.
+
+    인접 2행이 한 물리 행으로 합쳐지면 각 셀에 줄바꿈으로 여러 값이 들어온다.
+    그대로 `_rows_to_multiline_text`에 넣으면 날짜/과정명/기관명이 어긋나
+    `기본… 전문…` / `건설기술교육원건설기술교육원` 같은 깨진 1행이 생긴다.
+    """
+    out: List[List[str]] = []
+    for row in rows or []:
+        if not row:
+            continue
+        cells = [normalize_cell_text(c) for c in row]
+        splits = [split_multiline_cell(c) for c in cells]
+        max_n = max((len(s) for s in splits), default=0)
+        if max_n <= 1:
+            out.append([c for c in cells])
+            continue
+
+        joined = "\n".join(c for c in cells if c)
+        date_hits = _TRAINING_DATE_RANGE_RE.findall(joined)
+        if len(date_hits) < 2:
+            out.append([c for c in cells])
+            continue
+
+        n = max_n
+        for s in splits:
+            dated = [ln for ln in s if _TRAINING_DATE_RANGE_RE.search(ln)]
+            if len(dated) >= 2:
+                n = len(s)
+                break
+            if dated and len(s) > 1:
+                n = len(s)
+                break
+
+        expanded_cols: List[List[str]] = []
+        for s in splits:
+            if not s:
+                expanded_cols.append([""] * n)
+            elif len(s) == n:
+                expanded_cols.append(s)
+            elif len(s) == 1:
+                # 세로 라벨(교육훈련) 또는 단일 값 → 각 논리 행에 반복
+                expanded_cols.append([s[0]] * n)
+            elif len(s) < n:
+                expanded_cols.append(s + [s[-1]] * (n - len(s)))
+            else:
+                expanded_cols.append(s[:n])
+
+        for i in range(n):
+            out.append([col[i] for col in expanded_cols])
+    return out
+
+
+def _is_merged_training_artifact(cand: Dict[str, Any], others: List[Dict[str, Any]]) -> bool:
+    """표 세로 병합으로 생긴 깨진 교육훈련 행인지 판별한다."""
+    course = str(cand.get("과정명") or "").strip()
+    org = str(cand.get("교육기관명") or "").strip()
+    if not course:
+        return False
+
+    other_courses = [
+        str(o.get("과정명") or "").strip()
+        for o in others
+        if o is not cand and str(o.get("과정명") or "").strip()
+    ]
+
+    # 다른 두 과정명을 공백으로 이어 붙인 형태
+    for i, a in enumerate(other_courses):
+        for b in other_courses[i + 1 :]:
+            if a and b and course in (f"{a} {b}", f"{b} {a}"):
+                return True
+
+    cs = str(cand.get("교육기간_시작") or "")
+    ce = str(cand.get("교육기간_종료") or "")
+    same_date = [
+        o
+        for o in others
+        if o is not cand
+        and str(o.get("교육기간_시작") or "") == cs
+        and str(o.get("교육기간_종료") or "") == ce
+    ]
+    for o in same_date:
+        oc = str(o.get("과정명") or "").strip()
+        # 동일 기간에 더 짧은(정상) 과정명이 이미 있고, 후보가 이를 포함하면 병합 잔재
+        if oc and oc != course and oc in course and len(course) > len(oc) + 2:
+            return True
+
+    # 기관명이 공백 없이 두 번 반복된 형태 (건설기술교육원건설기술교육원)
+    if org and len(org) >= 4 and len(org) % 2 == 0:
+        half = len(org) // 2
+        if org[:half] == org[half:]:
+            if any(str(o.get("교육기관명") or "") == org[:half] for o in others if o is not cand):
+                return True
+            if any(oc and oc != course and oc in course for oc in other_courses):
+                return True
+
+    return False
+
+
+def _dedupe_training_records(items: List[Any]) -> List[Dict[str, Any]]:
+    """교육훈련 목록에서 완전 중복 및 세로 병합 잔재를 제거한다."""
+    by_key: Dict[tuple, Dict[str, Any]] = {}
+    for t in items or []:
+        if not isinstance(t, dict):
+            continue
+        k = (
+            str(t.get("교육기간_시작") or ""),
+            str(t.get("교육기간_종료") or ""),
+            str(t.get("과정명") or ""),
+            str(t.get("교육기관명") or ""),
+        )
+        if any(k) and k not in by_key:
+            by_key[k] = t
+    uniq = list(by_key.values())
+    return [t for t in uniq if not _is_merged_training_artifact(t, uniq)]
+
+
 def normalize_table_rows(table: List[Any]) -> List[List[str]]:
     out: List[List[str]] = []
     for row in table or []:
@@ -1946,13 +2066,14 @@ def parse_education_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
 
 
 def parse_training_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
-    chunk = _rows_to_multiline_text(rows)
+    expanded = _expand_vertically_merged_training_rows(rows)
+    chunk = _rows_to_multiline_text(expanded)
     out: List[Dict[str, Any]] = []
     for row in _extract_training_rows_from_text(chunk + "\n"):
         p = _parse_training_row(row)
         if p:
             out.append(p)
-    return out
+    return _dedupe_training_records(out)
 
 
 def parse_awards_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
@@ -2136,22 +2257,9 @@ def _merge_page1_table_first_then_text(table_part: Dict[str, Any], text_part: Di
             edus[k] = e if isinstance(e, dict) else {}
     out["학력"] = sorted(edus.values(), key=lambda x: (x.get("졸업일") or ""))
 
-    def _tr_key(t: Any) -> tuple:
-        if not isinstance(t, dict):
-            return tuple()
-        return (
-            str(t.get("교육기간_시작") or ""),
-            str(t.get("교육기간_종료") or ""),
-            str(t.get("과정명") or ""),
-            str(t.get("교육기관명") or ""),
-        )
-
-    trs: Dict[tuple, Dict[str, Any]] = {}
-    for t in (table_part.get("교육훈련") or []) + (text_part.get("교육훈련") or []):
-        k = _tr_key(t)
-        if k and k not in trs:
-            trs[k] = t if isinstance(t, dict) else {}
-    out["교육훈련"] = list(trs.values())
+    out["교육훈련"] = _dedupe_training_records(
+        (table_part.get("교육훈련") or []) + (text_part.get("교육훈련") or [])
+    )
 
     out["상훈"] = (table_part.get("상훈") or text_part.get("상훈") or [])[:]
     if not out["상훈"]:
