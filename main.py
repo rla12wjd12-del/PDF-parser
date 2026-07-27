@@ -1094,6 +1094,18 @@ def parse_full_document(pdf_path: str) -> dict:
         print(f"\n[ERROR] 파싱 중 오류 발생: {e}")
         import traceback
         traceback.print_exc()
+        # 조용한 빈 결과(200 + 빈 인적사항)로 넘기지 않도록 fatal 표기 후 재발생
+        result["_파싱오류"] = [
+            {
+                "stage": "parse_full_document",
+                "page": -1,
+                "fatal": True,
+                "error": repr(e),
+                "message": str(e),
+            }
+        ]
+        result["_fatal_error"] = str(e)
+        raise
     
     print(f"\n{'='*60}")
     print("[OK] 전체 파싱 완료")
@@ -1319,7 +1331,11 @@ def main():
             return 1
 
         # PDF 파싱
-        result = parse_full_document(pdf_path)
+        try:
+            result = parse_full_document(pdf_path)
+        except Exception as e:
+            print(f"[ERROR] PDF 파싱 실패: {e}")
+            return 1
 
         # JSON 파일로 저장
         JSON_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)

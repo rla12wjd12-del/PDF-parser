@@ -56,6 +56,21 @@ async def parse_pdf(file: UploadFile = File(...)) -> JSONResponse:
         if not isinstance(result, dict):
             raise HTTPException(status_code=500, detail="파서가 dict 결과를 반환하지 않았습니다.")
 
+        fatal = result.get("_fatal_error")
+        if isinstance(fatal, str) and fatal.strip():
+            raise HTTPException(status_code=500, detail=f"파싱 실패: {fatal.strip()}")
+
+        # 파서 오픈 실패가 삼켜진 경우 등: 인적사항 핵심 필드 없으면 명확히 실패 처리
+        person = result.get("인적사항")
+        if not isinstance(person, dict) or not str(person.get("성명") or "").strip():
+            raise HTTPException(
+                status_code=500,
+                detail=(
+                    "경력증명서에서 인적사항(성명)을 추출하지 못했습니다. "
+                    "PDF가 손상되었거나 지원 양식이 아닐 수 있습니다."
+                ),
+            )
+
         # FastAPI JSON encoding should handle Korean keys/values properly (UTF-8).
         return JSONResponse(content=result)
     except HTTPException:
@@ -101,4 +116,6 @@ async def json_to_excel(payload: dict[str, Any]) -> StreamingResponse:
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers=headers,
     )
+
+
 

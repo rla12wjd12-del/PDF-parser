@@ -244,6 +244,75 @@ def _strip_redundant_orphan_ho_suffix(t: str) -> str:
     return t
 
 
+def _is_shattered_award_type_cell(typ: str) -> bool:
+    """
+    표 칸 분할로 종류/근거가 조각만 남은 셀인지 판정한다.
+    예) ']', '[제999호', '호]' — 이 경우 행 전체 extras로 재조립해야 한다.
+    """
+    typ_compact = str(typ or "").strip().replace("\n", "").replace(" ", "")
+    if not typ_compact:
+        return False
+    if typ_compact in {"]", "호]", ",", ".", "'", '"'}:
+        return True
+    # 여는 대괄호만 있고 닫힘이 없는 중간 조각
+    if typ_compact.startswith("[") and "]" not in typ_compact:
+        return True
+    # 닫는 대괄호만 남은 짧은 꼬리(종류 토큰이 없을 때)
+    if len(typ_compact) <= 8 and "[" not in typ_compact and "]" in typ_compact:
+        if not any(tok in typ_compact for tok in _AWARD_TYPE_TOKENS):
+            return True
+    return False
+
+
+def _is_orphan_award_type_tail_fragment(s: str) -> bool:
+    """
+    온전한 '토큰[근거]' 뒤에 붙는 잔여 파편인지 판정.
+    예) '표창장 ]', '감사장]', '훈장 ]' — 표 칸 분할로 종류 토큰과 ']'만 남은 경우.
+    """
+    t = re.sub(r"\s+", " ", str(s or "").strip())
+    if not t:
+        return False
+    # 온전한 상훈 블록이 하나라도 있으면 파편이 아님
+    if _extract_award_type_bracket_blocks(t):
+        return False
+    # 닫는 괄호/공백만 남은 경우
+    if re.fullmatch(r"[\s\]]+", t):
+        return True
+    for tok in sorted(_AWARD_TYPE_TOKENS, key=len, reverse=True):
+        if not t.startswith(tok):
+            continue
+        rest = t[len(tok) :].strip()
+        # 토큰만, 또는 토큰 + 닫는 괄호류만
+        if not rest or re.fullmatch(r"[\s\]\)\}]+", rest):
+            return True
+        # '[' 없이 ']'만 남은 꼬리(의미 문자 없음)
+        if "[" not in rest and "]" in rest:
+            if not re.search(r"[가-힣A-Za-z0-9]", rest.replace("]", "")):
+                return True
+        break
+    return False
+
+
+def _strip_trailing_orphan_award_type_fragments(t: str) -> str:
+    """완전한 상훈 블록 뒤에만 남는 종류 토큰+']' 파편을 제거한다."""
+    s = re.sub(r"\s+", " ", str(t or "").strip())
+    if not s:
+        return ""
+    while True:
+        blocks = list(_AWARD_BLOCK_RE.finditer(s))
+        if not blocks:
+            break
+        end = blocks[-1].end()
+        tail = s[end:].strip()
+        if not tail:
+            break
+        if _is_orphan_award_type_tail_fragment(tail):
+            s = s[:end].strip()
+            continue
+        break
+    return s
+
+
 def _normalize_award_type_text(s: str) -> str:
     """
     상훈 종류/근거 문자열을 정규화한다.
@@ -386,6 +455,8 @@ def _normalize_award_type_text(s: str) -> str:
         t = t + "]"
     # [수정] 병합/줄바꿈 경로별로 들어간 뒤에도 근거 본문(첫 번째 [...]) 내부 공백을 일괄 정리한다.
     t = _squash_whitespace_inside_first_award_bracket_body(t)
+    # // [수정] 표 칸 분할으로 생긴 '표창장[제…] 표창장 ]' 꼬리 파편 제거
+    t = _strip_trailing_orphan_award_type_fragments(t)
     return t
 
 
@@ -2393,7 +2464,13 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                                     type_and_basis = institution
                                     institution = left_cell
                                 # 케이스 B: institution_col이 타입 조각, type_col이 꼬리 조각인 경우(예: '훈장증[석탑산' + '업훈장제...')
-                                elif _looks_like_award_type_token(institution) and type_and_basis:
+                                # // [수정] type_col이 ']'/[제… 처럼 칸 분할 파편이면 Case B로 '표창장 ]'만 만들면
+                                # 중간 칸('[제999호')을 놓친다 → shattered extras 복구에 맡긴다.
+                                elif (
+                                    _looks_like_award_type_token(institution)
+                                    and type_and_basis
+                                    and not _is_shattered_award_type_cell(type_and_basis)
+                                ):
                                     type_and_basis = (institution + " " + type_and_basis).strip()
                                     institution = left_cell
                         except Exception:
@@ -2402,20 +2479,17 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                         # [수정] 같은 행 안에서만 extras를 모아 무공백 복구(날짜 셀이 기관열로 복제되거나 종류 칸만 `]` 같은 조각인 PDF)
                         ar_compact = (award_date_raw or "").strip().replace(" ", "")
                         inst_compact = re.sub(r"\s+", "", (institution or "").strip())
-                        typ_compact = str(type_and_basis or "").strip().replace("\n", "").replace(" ", "")
                         bad_dupe_date_inst = (
                             award_date_raw
                             and bool(re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", award_date_raw.strip()))
                             and inst_compact == ar_compact
                         )
-                        shattered_type_only = False
-                        if typ_compact:
-                            if typ_compact in {"]", "호]", ",", ".", "'", '"'}:
-                                shattered_type_only = True
-                            elif len(typ_compact) <= 8 and "[" not in typ_compact and "]" in typ_compact:
-                                shattered_type_only = True
-                                if any(tok in typ_compact for tok in _AWARD_TYPE_TOKENS):
-                                    shattered_type_only = False
+                        # // [수정] 종류 칸 파편뿐 아니라, 기관 칸이 종류 토큰이고 종류 칸이 파편인
+                        # 장태명형(표창장 | [제999호 | ])도 extras 재조립 대상으로 본다.
+                        shattered_type_only = _is_shattered_award_type_cell(type_and_basis)
+                        shattered_row_layout = shattered_type_only and _looks_like_award_type_token(
+                            institution
+                        )
 
                         extras_all: list[str] = []
                         for ci, cell in enumerate(row):
@@ -2427,7 +2501,7 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                             if v == "상훈":
                                 continue
                             extras_all.append(v)
-                        if extras_all and (bad_dupe_date_inst or shattered_type_only):
+                        if extras_all and (bad_dupe_date_inst or shattered_type_only or shattered_row_layout):
                             ir, tr = _reconstruct_award_cells_from_fragment_extras(extras_all)
                             if ir.strip():
                                 institution = ir.strip()
@@ -2625,8 +2699,12 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                             # 앞부분이 잘린 듯한 파편(예: '구사업...')은 제외(오탐 방지)
                             if re.match(r"^(구사업|호\]$)", p.replace(" ", "")):
                                 continue
+                            # // [수정] 이미 온전한 블록이 있을 때 '표창장 ]' 같은 꼬리 파편은 이어붙이지 않음
+                            if _is_orphan_award_type_tail_fragment(p):
+                                continue
                             if p not in typ_merged:
                                 typ_merged = (typ_merged + " " + p).strip()
+                        typ_merged = _normalize_award_type_text(typ_merged)
                     merged2.append({"수여일": dt, "수여기관": inst_best, "종류및근거": typ_merged})
                     for it in items:
                         used_ids.add(id(it))

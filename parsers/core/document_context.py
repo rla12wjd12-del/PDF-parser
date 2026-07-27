@@ -2,12 +2,53 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import os
+import tempfile
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
 
 import pdfplumber
 
 from parsers.table_settings import TABLE_SETTINGS_VERSION, extract_tables_merged
+
+
+def _repair_pdf_for_pdfplumber(pdf_path: str, open_error: BaseException) -> str:
+    """
+    pdfplumber/pdfminer가 Info 메타데이터 등에서 실패하는 PDF를 PyMuPDF로 재저장한다.
+
+    예: 'Everyones Printer by PIROGOM' 가상프린터처럼 Producer가
+    공백 포함 name 토큰으로 깨져 있는 경우
+    (`Invalid dictionary construct: [/'Producer', /'Everyones', ...]`).
+    """
+    try:
+        import fitz  # type: ignore  # PyMuPDF
+    except Exception as e:
+        raise open_error from e
+
+    doc = fitz.open(pdf_path)
+    try:
+        # 깨진 Info 딕셔너리를 제거하고 xref를 재작성한다.
+        try:
+            doc.set_metadata({})
+        except Exception:
+            pass
+        fd, repaired_path = tempfile.mkstemp(suffix=".pdf", prefix="pdfplumber_repaired_")
+        os.close(fd)
+        try:
+            doc.save(repaired_path, garbage=4, deflate=True, clean=True)
+        except Exception:
+            try:
+                os.unlink(repaired_path)
+            except OSError:
+                pass
+            raise
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+    return repaired_path
 
 
 @dataclass
@@ -32,6 +73,9 @@ class DocumentContext:
     # PyMuPDF 문서 핸들 (문서당 1회 open, close()에서 해제)
     _fitz_doc: Optional[Any] = field(default=None, repr=False)
 
+    # pdfplumber 호환을 위해 재저장한 임시 PDF (close 시 삭제)
+    _repaired_path: Optional[str] = field(default=None, repr=False)
+
     _text_cache: Dict[int, str] = field(default_factory=dict)
     _tables_cache: Dict[Tuple[int, str], List[Any]] = field(default_factory=dict)
     _word_lines_cache: Dict[Tuple[int, str, float, float], List[str]] = field(default_factory=dict)
@@ -39,11 +83,42 @@ class DocumentContext:
 
     @classmethod
     def open(cls, pdf_path: str) -> "DocumentContext":
-        pdf = pdfplumber.open(pdf_path)
+        repaired_path: Optional[str] = None
+        open_path = pdf_path
+        open_error: Optional[BaseException] = None
+
+        try:
+            pdf = pdfplumber.open(open_path)
+        except Exception as e:
+            open_error = e
+            try:
+                repaired_path = _repair_pdf_for_pdfplumber(pdf_path, e)
+                open_path = repaired_path
+                pdf = pdfplumber.open(open_path)
+            except Exception as repair_err:
+                if repaired_path:
+                    try:
+                        os.unlink(repaired_path)
+                    except OSError:
+                        pass
+                # 원본 오픈 오류를 우선 노출 (원인 파악에 유리)
+                raise open_error from repair_err
+
         ctx = cls(pdf_path=pdf_path, pdf=pdf, pages=list(pdf.pages))
+        ctx._repaired_path = repaired_path
+        if repaired_path and open_error is not None:
+            # 수리 성공은 치명 오류가 아니므로 _파싱오류에 넣지 않는다(Zod/UI 혼동 방지).
+            print(
+                "[WARN] pdfplumber 오픈 실패 → PyMuPDF 재저장 후 재시도 성공: "
+                f"{open_error}"
+            )
+
+        # 텍스트·워드 추출은 수리본이 있으면 수리본을 사용 (동일 내용, pdfplumber와 일치)
+        fitz_path = repaired_path or pdf_path
         try:
             import fitz  # type: ignore  # PyMuPDF
-            ctx._fitz_doc = fitz.open(pdf_path)
+
+            ctx._fitz_doc = fitz.open(fitz_path)
         except Exception as e:
             ctx.errors.append({"stage": "fitz.open", "page": -1, "error": repr(e)})
         return ctx
@@ -59,6 +134,12 @@ class DocumentContext:
             self.pdf.close()
         except Exception:
             pass
+        if self._repaired_path:
+            try:
+                os.unlink(self._repaired_path)
+            except OSError:
+                pass
+            self._repaired_path = None
 
     def __enter__(self) -> "DocumentContext":
         return self
@@ -185,3 +266,5 @@ class DocumentContext:
             ws = []
         self._words_cache[key] = ws
         return ws
+
+
