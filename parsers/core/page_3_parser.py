@@ -146,10 +146,11 @@ def _cm_ym_tokens_excluding_day_precision(joined_space: str) -> list[str]:
     """
     // [수정] PDF에서 요일까지 없이 YYYY.MM만 나오는 참여기간(표 셀)도 레코드 앵커로 인식한다.
     품질 유지용: 먼저 YYYY.MM.DD를 통째로 제거한 뒤, 단독으로 남는 YYYY.MM만 센다.
+    [hardening stage1-b] '2087.94'(면적) 같은 숫자를 연·월로 오인하지 않도록 연도 19xx/20xx, 월 01~12만 인정한다.
     """
     s = joined_space or ""
     stripped = _CM_FULL_DATE_ANY.sub(" ", s)
-    return list(re.findall(r"\b\d{4}\.\d{2}\b(?!\.\d)", stripped))
+    return list(re.findall(r"\b(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])\b(?!\.\d)", stripped))
 
 
 _CM_HEAD_ANNOTATION_HINT = re.compile(
@@ -190,7 +191,9 @@ def _is_cm_period_anchor_row(row: list[str]) -> bool:
         return False
     if not row:
         return False
-    joined_space = " ".join(str(c or "") for c in (row or []))
+    # [hardening stage1-b] 참여기간은 표의 첫 열(기간 칸)에만 있다. 행 전체를 보면 개요 칸의 숫자
+    # (예: 연면적 2087.94㎡)가 날짜로 오인되어 개요·책임정도·금액 줄이 새 경력으로 잘려 나간다.
+    joined_space = str(row[0] or "")
     joined_nospace = re.sub(r"\s+", "", joined_space)
     n_full = len(_CM_FULL_DATE_ANY.findall(joined_space))
     ym_only = _cm_ym_tokens_excluding_day_precision(joined_space)
