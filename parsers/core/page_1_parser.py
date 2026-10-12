@@ -2033,6 +2033,120 @@ def parse_grade_from_table(rows: List[List[str]]) -> Dict[str, Any]:
     return {"등급": _parse_grade_dict_from_normalized_text(tn)}
 
 
+_QUAL_NAME = re.compile(
+    r"^[가-힣A-Za-z0-9·ㆍ]{2,}(?:기사|산업기사|기능사|기술사|기능장|행정사|지도사)(?:\([^)]{1,30}\))?$"
+)
+_PASS_DATE_WORD = re.compile(r"^(?:19|20)\d{2}\.\d{2}\.\d{2}$")
+_LICENSE_REG_WORD = re.compile(r"^[A-Za-z0-9][A-Za-z0-9\-]{5,}$")
+_LICENSE_STOP_LABELS = {"졸업일", "교육기간", "수여일", "근무기간"}
+
+
+def _licenses_from_fitz_page(page: Any) -> List[Dict[str, Any]]:
+    """
+    종목 헤더 아래, 학력·교육 헤더 위의 자격 칸을 좌표로 읽는다.
+
+    2쪽부터 이어진 자격은 표 섹션이 이미 학력으로 넘어가 텍스트 파서가 놓친다.
+    """
+    words = page.get_text("words") or []
+    headers = [w for w in words if str(w[4]) == "종목"]
+    if not headers:
+        return []
+    headers.sort(key=lambda w: (round(float(w[1]), 1), float(w[0])))
+    bands: List[List[Any]] = []
+    for word in headers:
+        if bands and abs(float(word[1]) - float(bands[-1][0][1])) < 4:
+            bands[-1].append(word)
+        else:
+            bands.append([word])
+
+    found: List[Dict[str, Any]] = []
+    for band in bands:
+        band.sort(key=lambda w: float(w[0]))
+        header_y = float(band[0][1])
+        stops = [
+            float(w[1])
+            for w in words
+            if str(w[4]) in _LICENSE_STOP_LABELS and float(w[1]) > header_y + 8
+        ]
+        y_end = min(stops) if stops else header_y + 420.0
+        for index, header in enumerate(band):
+            x0 = float(header[0]) - 55.0
+            x1 = float(band[index + 1][0]) - 8.0 if index + 1 < len(band) else float(header[0]) + 240.0
+            for word in words:
+                name = str(word[4]).strip()
+                name_x = float(word[0])
+                name_y = float(word[1])
+                if not (x0 <= name_x < x1 and header_y + 6 <= name_y < y_end):
+                    continue
+                if not _QUAL_NAME.match(name):
+                    continue
+                dates = [
+                    str(item[4])
+                    for item in words
+                    if abs(float(item[1]) - name_y) <= 3
+                    and name_x + 20 < float(item[0]) < x1
+                    and _PASS_DATE_WORD.match(str(item[4]))
+                ]
+                if not dates:
+                    continue
+                date_x = min(
+                    float(item[0])
+                    for item in words
+                    if str(item[4]) == dates[0] and abs(float(item[1]) - name_y) <= 3
+                )
+                regs = [
+                    str(item[4])
+                    for item in words
+                    if abs(float(item[1]) - name_y) <= 3
+                    and date_x + 10 < float(item[0]) < x1
+                    and _LICENSE_REG_WORD.match(str(item[4]))
+                ]
+                found.append(
+                    {
+                        "종목": name,
+                        "합격일": _yyyy_mm_dd_to_iso(dates[0]),
+                        "등록번호": regs[0] if regs else "",
+                    }
+                )
+    return found
+
+
+def _supplement_licenses_from_coordinates(ctx: Any, result: Dict[str, Any]) -> int:
+    """기술경력 시작 전 페이지의 자격 좌표를 읽어, 표 파서가 빠뜨린 종목만 더한다."""
+    fitz_doc = getattr(ctx, "_fitz_doc", None)
+    if fitz_doc is None:
+        return 0
+    limit = min(8, int(getattr(ctx, "total_pages", 0) or 0), int(fitz_doc.page_count))
+    found: List[Dict[str, Any]] = []
+    for index in range(limit):
+        text = ctx.get_text(index) or ""
+        if index > 0 and "1. 기술경력" in text:
+            break
+        found.extend(_licenses_from_fitz_page(fitz_doc[index]))
+        if "1. 기술경력" in text:
+            break
+    if not found:
+        return 0
+    rows = result.get("국가기술자격")
+    if not isinstance(rows, list):
+        rows = []
+        result["국가기술자격"] = rows
+    seen = {
+        (re.sub(r"\s+", "", str(row.get("종목") or "")), str(row.get("합격일") or ""))
+        for row in rows
+        if isinstance(row, dict)
+    }
+    added = 0
+    for item in found:
+        key = (re.sub(r"\s+", "", item["종목"]), item["합격일"])
+        if not item["종목"] or not item["합격일"] or key in seen:
+            continue
+        rows.append(item)
+        seen.add(key)
+        added += 1
+    return added
+
+
 def parse_qualifications_from_table(rows: List[List[str]]) -> List[Dict[str, Any]]:
     raw = _rows_to_multiline_text(rows)
     section = _extract_license_section_text(re.sub(r"[ \t]+", " ", raw))
@@ -2734,6 +2848,14 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
                             result["국가기술자격"] = mapped_rows
         except Exception:
             pass
+
+        # 2쪽 이후로 이어진 국가기술자격은 표 섹션 분류가 학력으로 넘어간 뒤라 빠진다.
+        try:
+            added = _supplement_licenses_from_coordinates(ctx, result)
+            if added:
+                print(f"    [OK] 국가기술자격 좌표 보강 {added}건")
+        except Exception as ex:
+            print(f"[WARN] 국가기술자격 좌표 보강 실패: {ex}")
 
         # 3) 국가기술자격 최종 정리(중복 제거 + 잘린 종목명 우선순위 해결)
         # - 동일 자격이 좌/우 컬럼 또는 표/좌표/텍스트 경로에서 중복 수집될 수 있다.

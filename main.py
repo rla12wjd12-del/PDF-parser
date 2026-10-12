@@ -398,6 +398,9 @@ def _verify_tech_career_per_page_against_pdf(
     """
     기술경력 구간 각 페이지: PDF에서 센 유효 ~ 개수 vs 해당 페이지 parse_page_2 누적 차이.
 
+    이 차이는 `_파싱오류`에 넣지 않는다. 경력 건수 오류는 기간 칸 좌표만 본다.
+    호출부(parse_full_document)는 이 함수를 오류 판정에 사용하지 않는다.
+
     Returns:
         (전체_페이지_행_목록, 파싱오류용_항목_목록)
     """
@@ -505,13 +508,23 @@ def _restore_dropped_cjk_in_careers(ctx: DocumentContext, result: dict) -> int:
                 if w[1] <= _CAREER_TABLE_TOP_Y or w[0] < _PERIOD_COLUMN_MAX_X or not _CJK_IDEOGRAPH.search(text):
                     continue
                 body = ""
+                prefix_len = 0
+                saw_cjk = False
                 for pos, ch in enumerate(text):
                     if _CJK_IDEOGRAPH.match(ch):
+                        if not saw_cjk:
+                            prefix_len = pos
+                            saw_cjk = True
                         body += "" if pos == len(text) - 1 else r"\s?"
                     else:
                         body += re.escape(ch)
+                # 한자 앞 글자가 길면(사업명+中석공사) 다음 단어 lookahead가 어긋나 복원이 빠진다.
+                # 앞 문맥이 짧은 한자(울주型)만 다음 단어로 다른 줄을 가린다.
                 nxt = str(words[i + 1][4]) if i + 1 < len(words) else ""
-                look = rf"(?=\s*{re.escape(nxt[:2])})" if nxt else r"(?=\s|$)"
+                if prefix_len >= 4:
+                    look = ""
+                else:
+                    look = rf"(?=\s*{re.escape(nxt[:2])})" if nxt else r"(?=\s|$)"
                 pats.append((re.compile(body + look), text))
         page_cache[page_1based] = pats
         return pats
@@ -535,6 +548,82 @@ def _restore_dropped_cjk_in_careers(ctx: DocumentContext, result: dict) -> int:
                 if new_val != val:
                     row[key] = new_val
     return fixed
+
+
+_CM_ROLE_WORD = re.compile(
+    r"^\*?(?:상주기술인|참여기술인|분야별책임기술인|기술지원기술인|사업책임기술인|책임기술인|현장대리인|용역감독)$"
+)
+_CM_ROLE_X_MIN = 320.0
+_CM_ROLE_X_MAX = 520.0
+
+
+def _fill_empty_cm_responsibility(ctx: DocumentContext, result: dict) -> int:
+    """
+    건설사업관리 행에서 책임정도가 비어 있고, 같은 경력 블록의 책임정도 칸에
+    상주기술인 등이 있으면 그 값을 넣는다.
+
+    날짜는 블록 첫 줄, 책임정도는 그 아래 줄이라 4줄 묶음이 어긋나면 칸이 빈다.
+    """
+    fitz_doc = getattr(ctx, "_fitz_doc", None)
+    if fitz_doc is None:
+        return 0
+    rows = [r for r in (result.get("건설사업관리및감리경력") or []) if isinstance(r, dict)]
+    if not rows:
+        return 0
+
+    by_page: dict[int, list[dict]] = {}
+    for row in rows:
+        for page_no in row.get("_pdf_pages") or []:
+            if isinstance(page_no, int):
+                by_page.setdefault(page_no, []).append(row)
+
+    filled = 0
+    for page_no, page_rows in by_page.items():
+        idx = page_no - 1
+        if not (0 <= idx < fitz_doc.page_count):
+            continue
+        words = fitz_doc[idx].get_text("words")
+        dates = sorted(
+            (
+                w
+                for w in words
+                if w[0] < _PERIOD_COLUMN_MAX_X and _PERIOD_DATE_WORD.match(str(w[4]))
+            ),
+            key=lambda w: (w[1], w[0]),
+        )
+        roles = [
+            w
+            for w in words
+            if _CM_ROLE_X_MIN <= w[0] <= _CM_ROLE_X_MAX and _CM_ROLE_WORD.match(str(w[4]).strip())
+        ]
+        used_dates: set[int] = set()
+        anchored: list[tuple[dict, float]] = []
+        for row in page_rows:
+            token = str(row.get("참여기간_시작일") or "").replace("-", ".")
+            if not re.fullmatch(r"\d{4}\.\d{2}\.\d{2}", token):
+                continue
+            for di, word in enumerate(dates):
+                if di in used_dates:
+                    continue
+                if str(word[4]) == token:
+                    used_dates.add(di)
+                    anchored.append((row, float(word[1])))
+                    break
+        anchored.sort(key=lambda item: item[1])
+        for pos, (row, date_y) in enumerate(anchored):
+            if str(row.get("책임정도") or "").strip():
+                continue
+            next_y = anchored[pos + 1][1] if pos + 1 < len(anchored) else date_y + 90.0
+            found: list[str] = []
+            for word in roles:
+                role_y = float(word[1])
+                if date_y - 4.0 <= role_y < next_y - 2.0:
+                    found.append(str(word[4]).strip())
+            unique = list(dict.fromkeys(found))
+            if len(unique) == 1:
+                row["책임정도"] = unique[0]
+                filled += 1
+    return filled
 
 
 # [hardening stage4] 경력증명서 표의 참여기간 칸 오른쪽 경계(x좌표, pt). 경력 1건 = 이 칸 안의
@@ -571,7 +660,9 @@ def count_career_rows_by_tilde(
     end_page: int,
 ) -> tuple[int, list[dict]]:
     """
-    PDF 페이지들에서 경력 행 수를 계산한다.
+    PDF 페이지들에서 글자 ~ 기준 경력 행 수를 계산한다.
+
+    parse_full_document 의 오류 판정에는 쓰지 않는다. 경력 건수는 기간 칸 좌표로 센다.
 
     반환값: (총 경력 수, 페이지별 상세 결과 리스트)
     - 상세 결과 각 항목: {"페이지": N, "~개수": N, "페이지경계┖→": N, "표내┖→": N, "건수": N}
@@ -638,14 +729,12 @@ def count_pdf_items(ctx: DocumentContext, tech_start: int, cm_start: int,
     """
     PDF 원본 텍스트에서 섹션별 항목 수를 패턴 기반으로 카운팅한다.
 
-    기술경력·건설사업관리및감리경력은 parse_page_2/3와 동일한 파서 호출이 아닌
-    페이지별 ~ 개수에서 '페이지경계┖→'만 빼 합산하는 레거시 방식이다
-    (건수 = ~개수 − 페이지경계┖→; 표내┖→는 차감하지 않음).
-    페이지마다 PDF 유효 ~ = 파싱 건수 여부는 별도 `_검증_기술경력_페이지별`로 검증한다.
+    기술경력·건설사업관리 건수는 글자 ~ 개수로 세지 않는다.
+    사업명·치수의 ~ 가 경력 행으로 잡히면 맞는 파싱을 오류로 기록하기 때문이다.
+    그 건수는 호출부에서 기간 칸 좌표(`_검증_좌표`)로만 판정한다.
 
     Returns:
-        dict: {"교육훈련": N, "근무처": N, "국가기술자격": N, "상훈": N,
-               "기술경력": N, "건설사업관리및감리경력": N}
+        dict: {"교육훈련": N, "근무처": N, "국가기술자격": N, "상훈": N}
     """
     _EDU_DATE_PAT = re.compile(r"\d{4}\.\d{2}\.\d{2}\s*~\s*\d{4}\.\d{2}\.\d{2}")
     _WP_START_PAT = re.compile(r"\d{4}\.\d{2}\.\d{2}\s*~")
@@ -697,33 +786,32 @@ def count_pdf_items(ctx: DocumentContext, tech_start: int, cm_start: int,
                     hits = _WP_START_PAT.findall(stripped)
                     wp_count += len(hits)
 
-    # --- 국가기술자격: 종목 키워드 + 합격일 날짜가 있는 줄 ---
+    # --- 국가기술자격 ---
+    # 한 줄 정규식은 건축사·행정사·지도사를 빼거나, 2쪽으로 넘어간 자격을 교육 헤더 뒤에서 끊는다.
+    # 교육훈련·근무처와 같이 제1쪽 파서(좌표 보강 포함) 건수를 검증 기준으로 쓴다.
     license_count = 0
-    for page_txt in page1_texts:
-        lines = page_txt.splitlines()
-        in_license = False
-        for ln in lines:
-            stripped = ln.strip()
-            if "종목" in stripped and "합격일" in stripped:
-                in_license = True
-                continue
-            if in_license:
-                if any(kw in stripped for kw in ["학력", "졸업일", "교육기간", "교육훈련"]):
-                    in_license = False
+    try:
+        p1 = _page1_for_counts(ctx)
+        license_count = len(p1.get("국가기술자격") or [])
+    except Exception:
+        license_count = 0
+        for page_txt in page1_texts:
+            lines = page_txt.splitlines()
+            in_license = False
+            for ln in lines:
+                stripped = ln.strip()
+                if "종목" in stripped and "합격일" in stripped:
+                    in_license = True
                     continue
-                license_count += len(_LICENSE_PAT.findall(stripped))
+                if in_license:
+                    if any(kw in stripped for kw in ["학력", "졸업일", "교육기간", "교육훈련"]):
+                        in_license = False
+                        continue
+                    license_count += len(_LICENSE_PAT.findall(stripped))
 
-    # --- 기술경력: ~ 개수 기반 독립 카운팅 (순환참조 없음) ---
-    print("  [검증] 기술경력 페이지별 ~ 카운팅 시작...")
-    tech_count, tech_page_details = count_career_rows_by_tilde(
-        ctx, tech_start, min(cm_start, total_pages)
-    )
-
-    # --- 건설사업관리및감리경력: ~ 개수 기반 독립 카운팅 ---
-    print("  [검증] 건설사업관리및감리경력 페이지별 ~ 카운팅 시작...")
-    cm_count, cm_page_details = count_career_rows_by_tilde(
-        ctx, cm_start, min(cm_end, total_pages)
-    )
+    # 기술경력·건설사업관리의 글자 ~ 개수 차이는 여기서 세지 않는다.
+    # 구간 인자는 호출 형태를 유지하기 위해 받되, 건수 판정에는 쓰지 않는다.
+    del tech_start, cm_start, cm_end
 
     # --- 상훈: 제1~3쪽 텍스트 블록에서 단일 수여일 데이터 줄 수 ---
     award_expected = 0
@@ -739,10 +827,6 @@ def count_pdf_items(ctx: DocumentContext, tech_start: int, cm_start: int,
         "근무처": wp_count,
         "국가기술자격": license_count,
         "상훈": award_expected,
-        "기술경력": tech_count,
-        "건설사업관리및감리경력": cm_count,
-        "_기술경력_페이지상세": tech_page_details,
-        "_건설사업관리_페이지상세": cm_page_details,
     }
 
 
@@ -863,7 +947,6 @@ def parse_full_document(pdf_path: str) -> dict:
             tech_end = max(min(tech_end, total_pages), tech_start)
 
             tech_page_snapshots: list[tuple[int, int]] = []
-            tech_per_page_verify_errors: list[dict] = []
             for page_idx in range(tech_start, tech_end):
                 if scan is not None:
                     careers = scan.rows(ctx, "tech", page_idx, lambda: parse_page_2(ctx, page_idx))
@@ -954,11 +1037,6 @@ def parse_full_document(pdf_path: str) -> dict:
             result["기술경력"] = tech_careers
             _mark_duplicates_by_name_and_period(result["기술경력"], section="기술경력")
             _finalize_row_meta(result["기술경력"])
-            tph_rows, tph_errs = _verify_tech_career_per_page_against_pdf(
-                ctx, tech_page_snapshots
-            )
-            result["_검증_기술경력_페이지별"] = tph_rows
-            tech_per_page_verify_errors = tph_errs
             print(f"[OK] 기술경력 파싱 완료 (총 {len(tech_careers)}건)")
         
             # 3. 제3쪽 파싱 (건설사업관리 및 감리경력)
@@ -1059,6 +1137,12 @@ def parse_full_document(pdf_path: str) -> dict:
             except Exception as e:
                 ctx.errors.append({"stage": "restore_cjk", "page": -1, "error": repr(e)})
 
+            # 책임정도 칸이 날짜보다 아래에 있어 비는 건설사업관리 행을 좌표로 채운다.
+            try:
+                _fill_empty_cm_responsibility(ctx, result)
+            except Exception as e:
+                ctx.errors.append({"stage": "fill_cm_responsibility", "page": -1, "error": repr(e)})
+
             # 4. 요약 페이지 파싱 (분야별 참여기간 인정일)
             print(f"\n[4/4] 요약 페이지 파싱 시작...")
             if summary_start is not None:
@@ -1070,9 +1154,9 @@ def parse_full_document(pdf_path: str) -> dict:
             print("[OK] 요약 페이지 파싱 완료")
 
             # 5. 항목 수 검증 (PDF 원본 vs 파싱 결과)
+            # 기술경력·건설사업관리의 글자 ~ 개수 차이는 파싱 오류로 넣지 않는다.
             print(f"\n[5/5] 항목 수 검증 시작...")
             parsing_errors: list = []
-            parsing_errors.extend(tech_per_page_verify_errors)
             try:
                 pdf_counts = count_pdf_items(
                     ctx, tech_start, cm_start, cm_end, summary_start, total_pages
@@ -1083,8 +1167,6 @@ def parse_full_document(pdf_path: str) -> dict:
                     "근무처",
                     "국가기술자격",
                     "상훈",
-                    "기술경력",
-                    "건설사업관리및감리경력",
                 ]
                 mismatch_items = []
                 for sec in sections:
@@ -1120,12 +1202,19 @@ def parse_full_document(pdf_path: str) -> dict:
                         parsed_total = len(result.get("기술경력") or []) + len(
                             result.get("건설사업관리및감리경력") or []
                         )
+                        coord_match = coord_n == parsed_total
                         result["_검증_좌표"] = {
                             "PDF원본": coord_n,
                             "파싱결과": parsed_total,
-                            "일치": coord_n == parsed_total,
+                            "일치": coord_match,
                         }
-                        if coord_n != parsed_total:
+                        # 배치 검증은 `_검증`의 일치 여부만 본다. 경력 건수는 좌표 결과만 넣는다.
+                        verification["기술경력+건설사업관리및감리경력"] = {
+                            "PDF원본": coord_n,
+                            "파싱결과": parsed_total,
+                            "일치": coord_match,
+                        }
+                        if not coord_match:
                             parsing_errors.append(
                                 {
                                     "오류유형": "좌표기준_경력수불일치",
