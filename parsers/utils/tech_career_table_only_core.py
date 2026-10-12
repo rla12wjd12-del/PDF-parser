@@ -28,6 +28,7 @@ from parsers.table_settings import (
     safe_extract_tables,
 )
 from parsers.table_career_parser import (
+    build_career_block_positional,
     find_header_start_row,
     merge_extra_rows_into_career_four_row_block,
     merge_into_previous,
@@ -448,29 +449,34 @@ def _iter_page2_tech_records_by_period_rows(
                 return False
         return True
 
-    data = t6[hs + 4 :]
-    data = [
+    # [hardening stage1-c] 빈 행·┖→ 단독 행을 지우기 전의 원래 행 순서로 블록을 나눈다(물리 줄 위치 보존).
+    data_all = [
         (list(r[:6]) + ([""] * (6 - len(r))) if len(r) < 6 else list(r[:6]))
-        for r in data
-        if (not _row_is_empty(r)) and (not _is_arrow_only_row(r))
+        for r in t6[hs + 4 :]
     ]
 
-    blocks: List[List[List[str]]] = []
+    raw_blocks: List[List[List[str]]] = []
     cur: List[List[str]] | None = None
-    for r in data:
+    for r in data_all:
         if _is_period_start_row(r):
             if cur:
-                blocks.append(cur)
+                raw_blocks.append(cur)
             cur = [r]
         else:
             if cur is None:
                 continue
             cur.append(r)
     if cur:
-        blocks.append(cur)
+        raw_blocks.append(cur)
 
     blank = [""] * 6
-    for blk in blocks:
+    for raw_blk in raw_blocks:
+        positional = build_career_block_positional(raw_blk, width=6)
+        if positional is not None:
+            yield (positional[0], positional[1], positional[2], positional[3])
+            continue
+        # 구조가 4줄 단위가 아니면 기존 방식(빈 행·┖→ 단독 행 제거 후 점수 기반 칸 배정)
+        blk = [r for r in raw_blk if (not _row_is_empty(r)) and (not _is_arrow_only_row(r))]
         # [수정] 5행째+ ┖→ 연장 행은 전부 r3가 아니라 열 패턴에 맞는 물리 줄(r0~r3)에 병합(CM 표와 동일)
         rows4: list[list[str]] = []
         for i in range(4):
@@ -588,12 +594,14 @@ def _parse_tech_careers_from_raw_table(
             except Exception:
                 pass
 
-    t6 = _stitch_page2_tech_data_rows_to_4row_blocks(t6, header_start_row=hs)
+    # [hardening stage1-c] _stitch_page2_tech_data_rows_to_4row_blocks 는 '┖→' 단독 행을 지워 물리 줄 위치를
+    # 잃게 하므로 호출하지 않는다. 같은 정리(빈 행·┖→ 단독 행 제거)는 위치 기반 배정이 불가능한 블록에서만
+    # _iter_page2_tech_records_by_period_rows 가 기존과 동일하게 수행한다.
 
     out: List[Dict[str, Any]] = []
     # [hardening stage1-a] 'YYYY.MM'(일 없음) 참여기간도 모든 페이지에서 경력 시작으로 인정한다.
     # 이전에는 진단용 debug_page=8 에서만 허용되어, 다른 페이지의 연·월 경력이 앞 경력의 연장 행으로
-    # 흡수(경력 누락 + 앞 경력 칸 오염)되었다. 오탐 방지 조건('~', 서로 다른 월 2개, '(n일)')은 그대로 둔다.
+    # 흡수(경력 누락 + 앞 경력 칸 오염)되었다. 오탐 방지 조건('~', 연·월로 시작, '(n일)')을 적용한다.
     for r0, r1, r2, r3 in _iter_page2_tech_records_by_period_rows(
         t6,
         header_start_row=hs,

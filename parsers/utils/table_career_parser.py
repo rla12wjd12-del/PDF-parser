@@ -419,6 +419,50 @@ def merge_extra_rows_into_career_four_row_block(
             base[slot][j] = merge_career_intrablock_cell_fragments(cur, frag)
 
 
+def build_career_block_positional(
+    rows: Sequence[Sequence[Any]],
+    *,
+    width: int = 6,
+) -> list[list[str]] | None:
+    """
+    [hardening stage1-c] 경력 한 건의 표 행들(빈 행 포함, 원래 순서)을 '물리 줄 위치'로 4줄에 합친다.
+
+    경력증명서 표는 경력 1건 = 4줄(r0 사업명/직무/담당, r1 발주자/공사종류/전문분야/직위,
+    r2 개요/책임정도/금액, r3 적용공법/신기술/시설물)이고, '┖→' 연장 블록도 같은 4줄 구조를 반복한다.
+    따라서 k번째 행(k>=4)은 k % 4 번째 줄의 연장이다.
+
+    아래 구조 조건을 모두 만족할 때만 결과를 돌려주고, 아니면 None(호출부는 기존 방식으로 처리)을 돌려준다.
+    - 끝의 빈 행을 덜어낸 뒤 행 수가 4의 배수
+    - 첫 행(기간 칸)을 뺀 나머지 행의 기간 칸은 비어 있음. 단, 연장 블록 첫 행은 '┖→'만 허용
+    """
+    norm: list[list[str]] = []
+    for r in rows or []:
+        cells = [_cell_str(c) for c in (r or [])]
+        cells = (cells + [""] * width)[:width]
+        norm.append(cells)
+    if not norm:
+        return None
+    while len(norm) > 4 and len(norm) % 4 != 0 and not any(c.strip() for c in norm[-1]):
+        norm.pop()
+    if len(norm) % 4 != 0:
+        return None
+    for k in range(1, len(norm)):
+        c0 = norm[k][0].replace(" ", "")
+        if k % 4 == 0:
+            if c0 not in {"", "┖→"}:
+                return None
+        elif c0:
+            return None
+    base = [list(norm[i]) for i in range(4)]
+    for k in range(4, len(norm)):
+        slot = k % 4
+        for j in range(1, width):
+            frag = norm[k][j].strip()
+            if frag:
+                base[slot][j] = merge_career_intrablock_cell_fragments(base[slot][j], frag)
+    return base
+
+
 def iter_records_4rows(table6: list[list[str]], *, header_start: int) -> Iterator[list[list[str]]]:
     """
     헤더 시작 행(header_start) 이후의 데이터 영역을 4행 블록으로 반환한다.

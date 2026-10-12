@@ -21,6 +21,7 @@ from parsers.document_context import DocumentContext
 from parsers.utils.logger import agent_debug_log as _agent_log
 from parsers.table_settings import LINE_TABLE_SETTINGS, VIRTUAL_LEFT_X, VIRTUAL_RIGHT_X, extract_tables_merged, pick_best_table, safe_extract_tables
 from parsers.table_career_parser import (
+    build_career_block_positional,
     find_header_start_row,
     iter_records_4rows,
     merge_extra_rows_into_career_four_row_block,
@@ -314,12 +315,16 @@ def _parse_cm_careers_from_raw_table(
         if data_start is None:
             data_start = header_start + 4
 
-        rows = table6[data_start:]
-        rows = [r for r in (rows or []) if r and any((c or "").strip() for c in r)]
+        # [hardening stage1-c] 빈 행도 지우지 않고 원래 순서대로 레코드에 담는다(물리 줄 위치 보존).
+        rows = [r for r in (table6[data_start:] or []) if r is not None]
 
         records: list[list[list[str]]] = []
         cur: list[list[str]] = []
         for r in rows:
+            if not any((c or "").strip() for c in r):
+                if cur:
+                    cur.append(r)
+                continue
             # // [수정] 업무요약 각주 줄이 이전 경력 레코드 꼬리로 병합되지 않도록 먼저 커서를 종료하고 버린다.
             if (_is_cm_annotation_joined_head_row(r) or _row_looks_cm_nondata_summary_row(r)) and not (
                 _is_cm_period_anchor_row(r)
@@ -344,7 +349,15 @@ def _parse_cm_careers_from_raw_table(
         # normalize to 4 rows
         # // [수정] (rec[:4] 잘림) 같은 경력의 5행째+ ┖→ 연장까지 한 블록으로 병합
         tbl_w = max(6, len(table6[0]) if table6 else 6)
-        out = [_squash_cm_record_rows_to_four(rec or [], width=tbl_w) for rec in records]
+        out = []
+        for rec in records:
+            positional = build_career_block_positional(rec or [], width=tbl_w)
+            if positional is not None:
+                out.append(positional)
+                continue
+            # 4줄 단위 구조가 아니면 기존 방식(빈 행 제거 후 점수 기반 칸 배정)
+            non_empty = [r for r in (rec or []) if r and any((c or "").strip() for c in r)]
+            out.append(_squash_cm_record_rows_to_four(non_empty, width=tbl_w))
         return out
 
     # 헤더 이후 데이터 영역에서 stop 키워드가 등장하면 그 이전까지만 남긴다.
