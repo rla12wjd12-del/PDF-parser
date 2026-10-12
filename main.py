@@ -5,6 +5,7 @@
 메인 실행 스크립트
 """
 
+import copy
 import json
 import argparse
 import logging
@@ -34,6 +35,7 @@ from parsers.page_3_parser import (
 )
 from parsers.page_summary_parser import parse_page_summary
 from parsers.document_context import DocumentContext
+from parsers.core.parallel_pages import scan_document
 from parsers.section_parsers import (
     parse_award_info,
     extract_award_section_text,
@@ -47,6 +49,17 @@ from parsers.quality_gate import check_field_completeness
 BASE_DIR = Path(__file__).parent
 JSON_OUTPUT_DIR = BASE_DIR / "json_output"
 EXCEL_OUTPUT_DIR = BASE_DIR / "excel_output"
+
+
+def _page1_for_counts(ctx: DocumentContext) -> dict:
+    """
+    [hardening stage7] 검증 건수용 제1쪽 결과. 본 파싱에서 얻은 결과의 사본을 쓴다
+    (같은 문서에 parse_page_1 을 세 번 더 돌리지 않도록. 사본이므로 이후 결과 가공의 영향을 받지 않는다).
+    """
+    cached = getattr(ctx, "_hardening_page1", None)
+    if isinstance(cached, dict):
+        return copy.deepcopy(cached)
+    return parse_page_1(ctx, page_num=0) or {}
 
 
 def count_expected_awards_from_pdf(ctx: DocumentContext, max_pages: int = 3) -> int:
@@ -63,7 +76,7 @@ def count_expected_awards_from_pdf(ctx: DocumentContext, max_pages: int = 3) -> 
     #      (표 추출/텍스트 추출 편차로 인해 간접 카운팅은 과소/과대 계상 가능)
     #      가장 안전한 기준은 제1쪽 통합 파서(`parse_page_1`)가 산출한 상훈 레코드 수다.
     try:
-        p1 = parse_page_1(ctx, page_num=0) or {}
+        p1 = _page1_for_counts(ctx)
         aw = list(p1.get("상훈") or [])
         real = [
             a
@@ -652,7 +665,7 @@ def count_pdf_items(ctx: DocumentContext, tech_start: int, cm_start: int,
     #      검증 목적에서는 제1쪽 통합 파서 결과와 동일한 기준(레코드 수)을 사용한다.
     edu_count = 0
     try:
-        p1 = parse_page_1(ctx, page_num=0) or {}
+        p1 = _page1_for_counts(ctx)
         edu_count = len(p1.get("교육훈련") or [])
     except Exception:
         edu_count = len(_EDU_DATE_PAT.findall(page1_combined))
@@ -664,7 +677,7 @@ def count_pdf_items(ctx: DocumentContext, tech_start: int, cm_start: int,
     # 검증 목적에서는 제1쪽 통합 파서(`parse_page_1`)와 동일한 기준(레코드 수)을 사용한다.
     wp_count = 0
     try:
-        p1 = parse_page_1(ctx, page_num=0) or {}
+        p1 = _page1_for_counts(ctx)
         wp_count = len(p1.get("근무처") or [])
     except Exception:
         # 폴백(레거시): '근무기간' 헤더 ~ 푸터 사이에서 'YYYY.MM.DD ~' 패턴
@@ -805,10 +818,18 @@ def parse_full_document(pdf_path: str) -> dict:
         with DocumentContext.open(pdf_path) as ctx:
             total_pages = ctx.total_pages
             print(f"[INFO] 총 페이지 수: {total_pages}")
-        
+
+            # [hardening stage7] 페이지 단위 병렬 처리. None 이면 기존 순차 방식(PDFPARSER_WORKERS=0/1, 작은 문서, 실패 시)
+            scan = scan_document(ctx)
+
             # 1. 제1쪽 파싱 (인적사항, 등급, 자격, 학력 등)
             print(f"\n[1/4] 제1쪽 파싱 시작...")
-            page1_data = parse_page_1(ctx, page_num=0)
+            if scan is not None:
+                page1_data = scan.page1(ctx, lambda: parse_page_1(ctx, page_num=0))
+            else:
+                page1_data = parse_page_1(ctx, page_num=0)
+            if isinstance(page1_data, dict):
+                ctx._hardening_page1 = copy.deepcopy(page1_data)
             result.update(page1_data)
             print("[OK] 제1쪽 파싱 완료")
         
@@ -844,7 +865,10 @@ def parse_full_document(pdf_path: str) -> dict:
             tech_page_snapshots: list[tuple[int, int]] = []
             tech_per_page_verify_errors: list[dict] = []
             for page_idx in range(tech_start, tech_end):
-                careers = parse_page_2(ctx, page_idx)
+                if scan is not None:
+                    careers = scan.rows(ctx, "tech", page_idx, lambda: parse_page_2(ctx, page_idx))
+                else:
+                    careers = parse_page_2(ctx, page_idx)
                 tech_careers.extend(careers)
                 tech_page_snapshots.append((page_idx, len(tech_careers)))
             merge_cross_page_tech_overviews(
@@ -947,7 +971,10 @@ def parse_full_document(pdf_path: str) -> dict:
             cm_end = max(min(cm_end, total_pages), cm_start)
 
             for page_idx in range(cm_start, cm_end):
-                careers = parse_page_3(ctx, page_idx)
+                if scan is not None:
+                    careers = scan.rows(ctx, "cm", page_idx, lambda: parse_page_3(ctx, page_idx))
+                else:
+                    careers = parse_page_3(ctx, page_idx)
                 cm_careers.extend(careers)
             result["건설사업관리및감리경력"] = cm_careers
             _mark_duplicates_by_name_and_period(result["건설사업관리및감리경력"], section="건설사업관리및감리경력")
@@ -1220,7 +1247,7 @@ def parse_full_document(pdf_path: str) -> dict:
         ]
         result["_fatal_error"] = str(e)
         raise
-    
+
     print(f"\n{'='*60}")
     print("[OK] 전체 파싱 완료")
     print(f"{'='*60}\n")
