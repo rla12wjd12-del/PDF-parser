@@ -445,6 +445,13 @@ def extract_tech_overview_continuation_from_page_text(text: str) -> str:
             break
     if start_i is None:
         return ""
+    # [hardening stage3] 앞 쪽에서 넘어온 연장은 이 쪽의 첫 경력(날짜 줄 + 다음 줄 '~')보다 위에 있다.
+    # 첫 경력 아래의 '┖→'는 이 쪽 경력의 표 내부 연장이므로 앞 쪽 마지막 경력에 붙이면 안 된다.
+    for i, ln in enumerate(lines[:start_i]):
+        if _DATE_RE.match(ln):
+            nxt = next((x for x in lines[i + 1 : i + 3] if x.strip()), "")
+            if nxt.lstrip().startswith("~"):
+                return ""
     chunks: List[str] = []
     for j in range(start_i, len(lines)):
         ln = lines[j]
