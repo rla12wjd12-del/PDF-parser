@@ -98,6 +98,34 @@ def _walk_diff(a, b, path: str, out: list[tuple[str, object, object]]) -> None:
         out.append((path, a, b))
 
 
+def _career_key(row: dict) -> tuple:
+    return (str(row.get("참여기간_시작일") or ""), str(row.get("참여기간_종료일") or ""))
+
+
+def _diff_careers(a: list, b: list, sec: str, out: list[tuple[str, object, object]], events: list[str]) -> None:
+    """경력 목록을 기간 기준으로 정렬·대응시켜 비교한다(중간 삽입으로 순번이 밀려도 정확히 비교)."""
+    import difflib
+
+    ka = [_career_key(r) for r in a]
+    kb = [_career_key(r) for r in b]
+    sm = difflib.SequenceMatcher(None, ka, kb, autojunk=False)
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            for i, j in zip(range(i1, i2), range(j1, j2)):
+                _walk_diff(a[i], b[j], f"{sec}[{i}]", out)
+            continue
+        if tag == "replace" and (i2 - i1) == (j2 - j1):
+            for i, j in zip(range(i1, i2), range(j1, j2)):
+                _walk_diff(a[i], b[j], f"{sec}[{i}]", out)
+            continue
+        for i in range(i1, i2):
+            events.append(f"   - 제거된 경력 {sec}[{i}] {ka[i][0]}~{ka[i][1]} {str(a[i].get('사업명'))[:40]!r}")
+            out.append((f"{sec}[{i}](제거)", ka[i], None))
+        for j in range(j1, j2):
+            events.append(f"   + 추가된 경력 {sec}[{j}] {kb[j][0]}~{kb[j][1]} {str(b[j].get('사업명'))[:40]!r}")
+            out.append((f"{sec}[{j}](추가)", None, kb[j]))
+
+
 def cmd_compare(ns: argparse.Namespace) -> int:
     base, cand = Path(ns.baseline), Path(ns.candidate)
     keys = sorted(p.stem for p in base.glob("[0-9][0-9].json"))
@@ -107,6 +135,7 @@ def cmd_compare(ns: argparse.Namespace) -> int:
     field_counter: dict[str, int] = {}
     time_b = time_c = 0.0
     problems = 0
+    count_changes: list[str] = []
     for key in keys:
         pb, pc = base / f"{key}.json", cand / f"{key}.json"
         if not pc.exists():
@@ -119,17 +148,23 @@ def cmd_compare(ns: argparse.Namespace) -> int:
         if b.get("_error"):
             lines.append(f"#{key} 예외: {b['_error']}")
             problems += 1
+        events: list[str] = []
         for sec in CAREER_SECTIONS:
             na, nb = len(a.get(sec) or []), len(b.get(sec) or [])
             if na != nb:
                 lines.append(f"#{key} {sec} 건수 변경 {na} → {nb}")
-                problems += 1
+                count_changes.append(f"#{key} {sec} {na}→{nb}")
         diffs: list[tuple[str, object, object]] = []
-        _walk_diff(a, b, "", diffs)
+        rest_a = {k: v for k, v in a.items() if k not in CAREER_SECTIONS}
+        rest_b = {k: v for k, v in b.items() if k not in CAREER_SECTIONS}
+        _walk_diff(rest_a, rest_b, "", diffs)
+        for sec in CAREER_SECTIONS:
+            _diff_careers(a.get(sec) or [], b.get(sec) or [], sec, diffs, events)
         if diffs:
             changed_files += 1
             total_changes += len(diffs)
             lines.append(f"#{key} 변경 {len(diffs)}건")
+            lines.extend(events)
             for path, x, y in diffs[: ns.max_per_file]:
                 field = path.split(".")[-1].split("[")[0]
                 field_counter[field] = field_counter.get(field, 0) + 1
@@ -138,7 +173,8 @@ def cmd_compare(ns: argparse.Namespace) -> int:
                 field = path.split(".")[-1].split("[")[0]
                 field_counter[field] = field_counter.get(field, 0) + 1
     head = [
-        f"비교 파일 {len(keys)}개 / 변경된 파일 {changed_files}개 / 변경 항목 {total_changes}건 / 예외·건수 문제 {problems}건",
+        f"비교 파일 {len(keys)}개 / 변경된 파일 {changed_files}개 / 변경 항목 {total_changes}건 / 예외 {problems}건",
+        "경력 건수 변경: " + (", ".join(count_changes) if count_changes else "없음"),
         f"처리 시간 합계: 기준 {time_b:.1f}s → 후보 {time_c:.1f}s",
         "필드별 변경 건수: " + ", ".join(f"{k} {v}" for k, v in sorted(field_counter.items(), key=lambda x: -x[1])),
         "",
@@ -146,7 +182,7 @@ def cmd_compare(ns: argparse.Namespace) -> int:
     text = "\n".join(head + lines)
     if ns.report:
         Path(ns.report).write_text(text, encoding="utf-8")
-    print("\n".join(head[:3]))
+    print("\n".join(head[:4]))
     return 1 if problems else 0
 
 
