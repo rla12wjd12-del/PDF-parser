@@ -895,30 +895,19 @@ def parse_full_document(pdf_path: str) -> dict:
                             row["사업명"] = nm
                     jf_known = str(row.get("직무분야") or "").strip()
                     dt_known = str(row.get("담당업무") or "").strip()
-                    # 에러4 보강: 사업명 중간에 "직무분야 담당업무"가 끼어있는 경우도 제거
-                    if jf_known and dt_known:
-                        pat = re.compile(
-                            rf"{re.escape(jf_known)}\s*{re.escape(dt_known)}"
-                        )
-                        hits = list(pat.finditer(nm))
-                        if hits:
-                            h = hits[-1]
-                            nm2 = (nm[: h.start()] + nm[h.end() :]).strip()
-                            nm2 = re.sub(r"\s+", " ", nm2).strip()
-                            # 콤마 뒤 공백 정규화(가독성 + '...,모로코' 복원)
-                            nm2 = re.sub(r",\s*", ", ", nm2)
-                            nm2 = re.sub(r"\s+,", ",", nm2)
-                            if nm2:
-                                nm = nm2
-                                row["사업명"] = nm
-                    # 기존 꼬리 제거 로직
-                    cleaned, jf, dt = _strip_tail_job_duty(nm)
-                    if cleaned != nm:
-                        row["사업명"] = cleaned
-                        if jf and not jf_known:
-                            row["직무분야"] = jf
-                        if dt and not dt_known:
-                            row["담당업무"] = dt
+                    # [hardening stage2] 표 기반 파싱은 사업명·직무분야·담당업무 칸을 따로 읽는다.
+                    # 직무분야·담당업무가 모두 채워졌다면 사업명 칸에 그 글자가 섞일 수 없으므로 사업명을 고치지 않는다.
+                    # (이전: 사업명 중간의 '직무+담당' 문자열 삭제 → '조경설계', '토목설계'가 들어간 정상 사업명 훼손,
+                    #  꼬리 제거 → '…주변 환경 개선공사'의 '환경 개선공사'를 직무분야+담당업무로 오판해 삭제)
+                    # 꼬리 제거는 칸이 합쳐져 직무분야나 담당업무가 비어 있을 때만 적용한다.
+                    if not (jf_known and dt_known):
+                        cleaned, jf, dt = _strip_tail_job_duty(nm)
+                        if cleaned != nm:
+                            row["사업명"] = cleaned
+                            if jf and not jf_known:
+                                row["직무분야"] = jf
+                            if dt and not dt_known:
+                                row["담당업무"] = dt
                     # 가독성 정규화: 콤마 뒤 공백(사업명에서만)
                     nm3 = str(row.get("사업명") or "").strip()
                     if nm3 and "," in nm3:
