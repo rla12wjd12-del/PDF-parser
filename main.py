@@ -463,6 +463,34 @@ def _verify_tech_career_per_page_against_pdf(
     return rows, err_items
 
 
+# [hardening stage4] 경력증명서 표의 참여기간 칸 오른쪽 경계(x좌표, pt). 경력 1건 = 이 칸 안의
+# 시작 날짜(YYYY.MM 또는 YYYY.MM.DD) 바로 아래 '~' 한 쌍.
+_PERIOD_COLUMN_MAX_X = 78.0
+_PERIOD_DATE_WORD = re.compile(r"^(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])(?:\.\d{2})?$")
+
+
+def _count_career_periods_by_coordinates(
+    ctx: DocumentContext, start_page: int, end_page: int
+) -> int | None:
+    """
+    기술경력·건설사업관리 구간 페이지에서 '기간 칸 안의 시작 날짜 + 바로 아래 ~' 쌍의 수를 센다.
+
+    텍스트 줄 기반 카운트와 독립적인 기준(PyMuPDF 단어 좌표)이라, 표 인식·텍스트 순서 문제로
+    양쪽이 함께 틀리는 경우를 줄인다. PyMuPDF 핸들이 없으면 None.
+    """
+    fitz_doc = getattr(ctx, "_fitz_doc", None)
+    if fitz_doc is None:
+        return None
+    total = 0
+    for page_idx in range(max(0, start_page), min(end_page, fitz_doc.page_count)):
+        words = [w for w in fitz_doc[page_idx].get_text("words") if w[0] < _PERIOD_COLUMN_MAX_X]
+        tildes = [w for w in words if str(w[4]).strip().startswith("~")]
+        for w in words:
+            if _PERIOD_DATE_WORD.match(str(w[4])) and any(0 < t[1] - w[1] < 14 for t in tildes):
+                total += 1
+    return total
+
+
 def count_career_rows_by_tilde(
     ctx: DocumentContext,
     start_page: int,
@@ -990,6 +1018,34 @@ def parse_full_document(pdf_path: str) -> dict:
                         mismatch_items.append((sec, pdf_n, parsed_n))
 
                 result["_검증"] = verification
+
+                # [hardening stage4] 좌표 기반 독립 검증(텍스트 기반 ~ 카운트가 놓치는 누락 탐지용)
+                try:
+                    coord_n = _count_career_periods_by_coordinates(ctx, tech_start, cm_end)
+                    if coord_n is not None:
+                        parsed_total = len(result.get("기술경력") or []) + len(
+                            result.get("건설사업관리및감리경력") or []
+                        )
+                        result["_검증_좌표"] = {
+                            "PDF원본": coord_n,
+                            "파싱결과": parsed_total,
+                            "일치": coord_n == parsed_total,
+                        }
+                        if coord_n != parsed_total:
+                            parsing_errors.append(
+                                {
+                                    "오류유형": "좌표기준_경력수불일치",
+                                    "섹션": "기술경력+건설사업관리및감리경력",
+                                    "PDF원본건수": coord_n,
+                                    "파싱결과건수": parsed_total,
+                                    "차이": parsed_total - coord_n,
+                                    "내용": (
+                                        f"기간 칸 좌표 기준 경력 {coord_n}건 vs 파싱 {parsed_total}건"
+                                    ),
+                                }
+                            )
+                except Exception as e:
+                    parsing_errors.append({"오류유형": "좌표기준_검증실패", "내용": repr(e)})
 
                 if mismatch_items:
                     print(f"[WARN] 항목 수 불일치 발견!")
