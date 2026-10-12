@@ -276,7 +276,9 @@ def _filter_career_page_details_for_parse_error(page_details: list[dict]) -> lis
     return out
 
 
-_DATE_STRICT_CAREER = re.compile(r"^\d{4}\.\d{2}\.\d{2}$")
+# [hardening stage1-a] 일(日) 없이 'YYYY.MM'만 적힌 참여기간도 유효 날짜 줄로 센다(파서와 기준 일치).
+# 숫자 오인을 막기 위해 연도 19xx/20xx, 월 01~12만 허용한다.
+_DATE_STRICT_CAREER = re.compile(r"^(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])(?:\.\d{2})?$")
 
 
 def _line_starts_with_career_continue_arrow(s: str) -> bool:
