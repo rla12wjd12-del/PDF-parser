@@ -369,6 +369,102 @@ def _parse_summary_text(text: str) -> Dict[str, List[Dict[str, Any]]]:
     return result
 
 
+_COORD_DAYS_NUM_RE = re.compile(r"^[\d,]+$")
+_COORD_LEFT_COLUMN_FALLBACK_X = 300.0  # 좌측(공사종류별)·우측(직무/전문분야별) 열 경계(우측 머리글을 못 찾을 때)
+_COORD_ROW_ATTACH_DY = 12.0  # 줄바꿈된 이름 줄을 숫자 행에 붙일 수 있는 최대 세로 거리(pt). 행 간격은 약 20pt
+
+
+def _parse_left_column_by_coordinates(ctx: DocumentContext, page_num: int) -> List[Dict[str, Any]] | None:
+    """
+    [hardening stage5] '공사종류별 인정일수 현황'(좌측 열)을 PyMuPDF 단어 좌표로 읽는다.
+
+    텍스트 줄 기반 파싱은 이름이 두 줄로 줄바꿈되면(숫자 행의 위·아래로 나뉨) 이웃 행 이름과 붙거나 잘린다.
+    여기서는 각 행 오른쪽의 'N 일'을 기준점으로 삼고, 이름 줄을 세로로 가장 가까운 기준점 행에 붙인다.
+    항목 합계가 표 아래 '인정일수 합계'와 정확히 같을 때만 결과를 돌려주고, 아니면 None.
+    """
+    fitz_doc = getattr(ctx, "_fitz_doc", None)
+    if fitz_doc is None:
+        return None
+    rows: List[Dict[str, Any]] = []
+    total_days: int | None = None
+    right_x = _COORD_LEFT_COLUMN_FALLBACK_X
+    started = False
+    for pno in range(page_num, fitz_doc.page_count):
+        words = fitz_doc[pno].get_text("words")
+        # 페이지 본문 시작 y: 제목 줄('분야별 참여기간 인정일 및 …') 아래
+        title_y = max((w[3] for w in words if w[4] == "분야별" and w[1] < 90), default=85.0)
+        top_y = title_y + 2
+        if not started:
+            header = [w for w in words if w[4].startswith("공사종류별")]
+            if not header:
+                continue
+            started = True
+            top_y = max(top_y, header[0][3] + 2)
+            rh = [w for w in words if w[4].startswith("직무/전문분야별")]
+            if rh:
+                # 우측 열 이름은 우측 머리글보다 왼쪽(약 x=315)에서 시작한다. 좌측 열의 끝은 좌측 열 'N 일'의
+                # '일'(우측 머리글보다 충분히 왼쪽에 있는 것) 중 가장 오른쪽 끝으로 잡는다.
+                left_il_ends = [w[2] for w in words if w[4] == "일" and w[0] < rh[0][0] - 40]
+                if left_il_ends:
+                    right_x = max(left_il_ends) + 2
+                else:
+                    left_header_end = max(w[2] for w in words if abs(w[1] - header[0][1]) < 2 and w[0] < rh[0][0])
+                    right_x = min((left_header_end + rh[0][0]) / 2.0, _COORD_LEFT_COLUMN_FALLBACK_X)
+        # 읽기 종료 y: 주석(※), 다음 대섹션('2.'), 쪽 하단 발급 안내문('본 증명서는 …')
+        stop_y = min(
+            [
+                w[1]
+                for w in words
+                if w[4].startswith("※") or (w[4] == "2." and w[0] < 60) or w[4] == "증명서는"
+            ]
+            or [1e9]
+        )
+        left = sorted(
+            [w for w in words if w[0] < right_x and top_y <= w[1] < stop_y],
+            key=lambda w: (w[5], w[6], w[7]),
+        )
+        # 줄 단위로 묶기
+        lines: Dict[tuple, List[Any]] = {}
+        for w in left:
+            lines.setdefault((w[5], w[6]), []).append(w)
+        anchors: List[Dict[str, Any]] = []
+        label_lines: List[tuple[float, str]] = []
+        for ws in lines.values():
+            ws.sort(key=lambda w: w[0])
+            toks = [w[4] for w in ws]
+            # 줄 끝의 'N 일' → 기준점, 앞쪽 단어는 같은 행의 이름
+            if len(toks) >= 2 and toks[-1] == "일" and _COORD_DAYS_NUM_RE.match(toks[-2]):
+                days = int(toks[-2].replace(",", ""))
+                name = " ".join(toks[:-2]).strip()
+                anchors.append({"y": ws[-2][1], "days": days, "parts": [(ws[0][1], name)] if name else []})
+            else:
+                label_lines.append((ws[0][1], " ".join(toks).strip()))
+        for y, text in label_lines:
+            if not anchors:
+                return None
+            near = min(anchors, key=lambda a: abs(a["y"] - y))
+            if abs(near["y"] - y) > _COORD_ROW_ATTACH_DY:
+                return None
+            near["parts"].append((y, text))
+        for a in sorted(anchors, key=lambda a: a["y"]):
+            parts = [t for _, t in sorted(a["parts"])]
+            label = "".join(p.replace(" ", "") for p in parts) if len(parts) > 1 else (parts[0] if parts else "")
+            label = re.sub(r"\s+", " ", label).strip()
+            if re.sub(r"\s+", "", label) == "인정일수합계":
+                total_days = a["days"]
+                break
+            if not label:
+                return None
+            rows.append({"공사종류": label, "인정일수": str(a["days"])})
+        if total_days is not None:
+            break
+    if total_days is None or not rows:
+        return None
+    if sum(int(r["인정일수"]) for r in rows) != total_days:
+        return None
+    return rows
+
+
 def parse_page_summary(ctx: DocumentContext, page_num: int) -> Dict[str, List[Dict[str, Any]]]:
     """
     요약 페이지 파싱: 분야별 참여기간 인정일
@@ -438,6 +534,15 @@ def parse_page_summary(ctx: DocumentContext, page_num: int) -> Dict[str, List[Di
         )
 
         result.update(best_parsed)
+
+        # [hardening stage5] 좌측(공사종류별)은 좌표 기반 결과가 합계 검산을 통과하면 그것을 쓴다.
+        try:
+            coord_left = _parse_left_column_by_coordinates(ctx, page_num)
+        except Exception as e:  # 좌표 방식 실패 시 텍스트 결과 유지
+            coord_left = None
+            print(f"[WARN] 요약 좌측 열 좌표 파싱 실패(텍스트 결과 유지): {e}")
+        if coord_left is not None:
+            result["공사종류별인정일수"] = coord_left
 
     except Exception as e:
         print(f"[ERROR] 요약 페이지 파싱 오류: {e}")

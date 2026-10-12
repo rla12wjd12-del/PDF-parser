@@ -28,6 +28,7 @@ from parsers.table_settings import (
     safe_extract_tables,
 )
 from parsers.table_career_parser import (
+    build_career_block_positional,
     find_header_start_row,
     merge_extra_rows_into_career_four_row_block,
     merge_into_previous,
@@ -422,13 +423,15 @@ def _iter_page2_tech_records_by_period_rows(
             # 오탐 방지:
             # - '~'가 있어야 함
             # - (n일) 토큰이 있어야 함
-            # - 월 토큰 2개가 서로 달라야 함(같으면 헤더/노이즈일 가능성 큼)
+            # - 셀이 연·월(19xx/20xx.01~12)로 시작해야 함
+            # [hardening stage1-a] '1991.04 ~ 1991.04 (0일)(1일)'처럼 시작·종료가 같은 달인 실제 경력이 있어
+            #   "월 토큰 2개가 서로 달라야 함" 조건은 제거한다(머리글·노이즈에는 '(n일)'이 없으므로 위 조건으로 충분).
             if "~" not in c0:
+                return False
+            if re.match(r"^(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])\b", c0) is None:
                 return False
             yms = re.findall(r"\b\d{4}\.\d{2}\b", c0)
             if len(yms) < 2:
-                return False
-            if yms[0] == yms[1]:
                 return False
             if re.search(r"\(\s*\d[\d,]*\s*일\s*\)", c0) is None:
                 return False
@@ -446,29 +449,34 @@ def _iter_page2_tech_records_by_period_rows(
                 return False
         return True
 
-    data = t6[hs + 4 :]
-    data = [
+    # [hardening stage1-c] 빈 행·┖→ 단독 행을 지우기 전의 원래 행 순서로 블록을 나눈다(물리 줄 위치 보존).
+    data_all = [
         (list(r[:6]) + ([""] * (6 - len(r))) if len(r) < 6 else list(r[:6]))
-        for r in data
-        if (not _row_is_empty(r)) and (not _is_arrow_only_row(r))
+        for r in t6[hs + 4 :]
     ]
 
-    blocks: List[List[List[str]]] = []
+    raw_blocks: List[List[List[str]]] = []
     cur: List[List[str]] | None = None
-    for r in data:
+    for r in data_all:
         if _is_period_start_row(r):
             if cur:
-                blocks.append(cur)
+                raw_blocks.append(cur)
             cur = [r]
         else:
             if cur is None:
                 continue
             cur.append(r)
     if cur:
-        blocks.append(cur)
+        raw_blocks.append(cur)
 
     blank = [""] * 6
-    for blk in blocks:
+    for raw_blk in raw_blocks:
+        positional = build_career_block_positional(raw_blk, width=6)
+        if positional is not None:
+            yield (positional[0], positional[1], positional[2], positional[3])
+            continue
+        # 구조가 4줄 단위가 아니면 기존 방식(빈 행·┖→ 단독 행 제거 후 점수 기반 칸 배정)
+        blk = [r for r in raw_blk if (not _row_is_empty(r)) and (not _is_arrow_only_row(r))]
         # [수정] 5행째+ ┖→ 연장 행은 전부 r3가 아니라 열 패턴에 맞는 물리 줄(r0~r3)에 병합(CM 표와 동일)
         rows4: list[list[str]] = []
         for i in range(4):
@@ -586,61 +594,21 @@ def _parse_tech_careers_from_raw_table(
             except Exception:
                 pass
 
-    t6 = _stitch_page2_tech_data_rows_to_4row_blocks(t6, header_start_row=hs)
+    # [hardening stage1-c] _stitch_page2_tech_data_rows_to_4row_blocks 는 '┖→' 단독 행을 지워 물리 줄 위치를
+    # 잃게 하므로 호출하지 않는다. 같은 정리(빈 행·┖→ 단독 행 제거)는 위치 기반 배정이 불가능한 블록에서만
+    # _iter_page2_tech_records_by_period_rows 가 기존과 동일하게 수행한다.
 
     out: List[Dict[str, Any]] = []
-    debug_page = 8  # 진단 대상(요청 PDF에서 불일치 발생 페이지)
-    if page_num_1based == debug_page:
-        try:
-            # data 구간의 첫 컬럼 샘플(블록 분리 실패 원인 추적용)
-            hs_i = int(hs) if hs is not None else -1
-            data_rows = t6[hs_i + 4 :] if (hs_i >= 0 and (hs_i + 4) < len(t6 or [])) else []
-            c0_samples = []
-            for rr in data_rows[:20]:
-                try:
-                    c0_samples.append(str((rr[0] if rr else "") or "")[:80])
-                except Exception:
-                    c0_samples.append("")
-            _agent_log(
-                run_id="table-only",
-                hypothesis_id="T",
-                location="tech_career_table_only_core.py:_parse_tech_careers_from_raw_table:pre_iter",
-                message="diagnose blocks for target page",
-                data={
-                    "page_num_1based": page_num_1based,
-                    "n_tables": len(tables or []),
-                    "best_rows": len(best or []),
-                    "t6_rows": len(t6 or []),
-                    "header_start_row": hs,
-                    "data_c0_samples": c0_samples,
-                },
-            )
-        except Exception:
-            pass
+    # [hardening stage1-a] 'YYYY.MM'(일 없음) 참여기간도 모든 페이지에서 경력 시작으로 인정한다.
+    # 이전에는 진단용 debug_page=8 에서만 허용되어, 다른 페이지의 연·월 경력이 앞 경력의 연장 행으로
+    # 흡수(경력 누락 + 앞 경력 칸 오염)되었다. 오탐 방지 조건('~', 연·월로 시작, '(n일)')을 적용한다.
     for r0, r1, r2, r3 in _iter_page2_tech_records_by_period_rows(
         t6,
         header_start_row=hs,
-        allow_ym_period_start=(page_num_1based == debug_page),
+        allow_ym_period_start=True,
     ):
         raw_period = (r0[0] if len(r0) >= 1 else "") or ""
         period = parse_period_cell(raw_period, yyyy_mm_dd_to_iso=_yyyy_mm_dd_to_iso)
-        if page_num_1based == debug_page:
-            try:
-                _agent_log(
-                    run_id="table-only",
-                    hypothesis_id="T",
-                    location="tech_career_table_only_core.py:_parse_tech_careers_from_raw_table:period_row",
-                    message="period parsed from r0[0]",
-                    data={
-                        "page_num_1based": page_num_1based,
-                        "raw_period": str(raw_period)[:180],
-                        "start_iso": str(getattr(period, "start_iso", "") or ""),
-                        "end_iso": str(getattr(period, "end_iso", "") or ""),
-                        "has_continue_arrow": bool(getattr(period, "has_continue_arrow", False)),
-                    },
-                )
-            except Exception:
-                pass
 
         row = _blank_career_row()
         row["_pdf_pages"] = [page_num_1based]

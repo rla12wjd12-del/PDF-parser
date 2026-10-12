@@ -21,6 +21,7 @@ from parsers.document_context import DocumentContext
 from parsers.utils.logger import agent_debug_log as _agent_log
 from parsers.table_settings import LINE_TABLE_SETTINGS, VIRTUAL_LEFT_X, VIRTUAL_RIGHT_X, extract_tables_merged, pick_best_table, safe_extract_tables
 from parsers.table_career_parser import (
+    build_career_block_positional,
     find_header_start_row,
     iter_records_4rows,
     merge_extra_rows_into_career_four_row_block,
@@ -146,10 +147,11 @@ def _cm_ym_tokens_excluding_day_precision(joined_space: str) -> list[str]:
     """
     // [수정] PDF에서 요일까지 없이 YYYY.MM만 나오는 참여기간(표 셀)도 레코드 앵커로 인식한다.
     품질 유지용: 먼저 YYYY.MM.DD를 통째로 제거한 뒤, 단독으로 남는 YYYY.MM만 센다.
+    [hardening stage1-b] '2087.94'(면적) 같은 숫자를 연·월로 오인하지 않도록 연도 19xx/20xx, 월 01~12만 인정한다.
     """
     s = joined_space or ""
     stripped = _CM_FULL_DATE_ANY.sub(" ", s)
-    return list(re.findall(r"\b\d{4}\.\d{2}\b(?!\.\d)", stripped))
+    return list(re.findall(r"\b(?:19|20)\d{2}\.(?:0[1-9]|1[0-2])\b(?!\.\d)", stripped))
 
 
 _CM_HEAD_ANNOTATION_HINT = re.compile(
@@ -190,7 +192,9 @@ def _is_cm_period_anchor_row(row: list[str]) -> bool:
         return False
     if not row:
         return False
-    joined_space = " ".join(str(c or "") for c in (row or []))
+    # [hardening stage1-b] 참여기간은 표의 첫 열(기간 칸)에만 있다. 행 전체를 보면 개요 칸의 숫자
+    # (예: 연면적 2087.94㎡)가 날짜로 오인되어 개요·책임정도·금액 줄이 새 경력으로 잘려 나간다.
+    joined_space = str(row[0] or "")
     joined_nospace = re.sub(r"\s+", "", joined_space)
     n_full = len(_CM_FULL_DATE_ANY.findall(joined_space))
     ym_only = _cm_ym_tokens_excluding_day_precision(joined_space)
@@ -276,10 +280,11 @@ def _parse_cm_careers_from_raw_table(
     if not tables:
         return []
 
-    try:
-        best = pick_best_table(tables, _cm_table_score) or []
-    except Exception:
-        best = tables[0] if tables else []
+    # [hardening stage4-b] 이전 코드는 pick_best_table(tables, _cm_table_score)를 호출했지만 _cm_table_score 는
+    # _extract_cm_projects_from_table 안에만 정의돼 있어 항상 NameError → except 에서 첫 번째 표를 썼다.
+    # 그 점수 함수는 '2. 건설사업관리 및 감리경력' 제목 행이 있는 표를 감점하는데, 실제 CM 경력 표 첫 행에
+    # 그 제목이 들어 있어 점수 선택을 살리면 오히려 잘못된 표를 고를 수 있다. 검증된 실제 동작(첫 번째 표)을 명시한다.
+    best = tables[0] if tables else []
     if not best:
         return []
 
@@ -311,12 +316,16 @@ def _parse_cm_careers_from_raw_table(
         if data_start is None:
             data_start = header_start + 4
 
-        rows = table6[data_start:]
-        rows = [r for r in (rows or []) if r and any((c or "").strip() for c in r)]
+        # [hardening stage1-c] 빈 행도 지우지 않고 원래 순서대로 레코드에 담는다(물리 줄 위치 보존).
+        rows = [r for r in (table6[data_start:] or []) if r is not None]
 
         records: list[list[list[str]]] = []
         cur: list[list[str]] = []
         for r in rows:
+            if not any((c or "").strip() for c in r):
+                if cur:
+                    cur.append(r)
+                continue
             # // [수정] 업무요약 각주 줄이 이전 경력 레코드 꼬리로 병합되지 않도록 먼저 커서를 종료하고 버린다.
             if (_is_cm_annotation_joined_head_row(r) or _row_looks_cm_nondata_summary_row(r)) and not (
                 _is_cm_period_anchor_row(r)
@@ -341,7 +350,15 @@ def _parse_cm_careers_from_raw_table(
         # normalize to 4 rows
         # // [수정] (rec[:4] 잘림) 같은 경력의 5행째+ ┖→ 연장까지 한 블록으로 병합
         tbl_w = max(6, len(table6[0]) if table6 else 6)
-        out = [_squash_cm_record_rows_to_four(rec or [], width=tbl_w) for rec in records]
+        out = []
+        for rec in records:
+            positional = build_career_block_positional(rec or [], width=tbl_w)
+            if positional is not None:
+                out.append(positional)
+                continue
+            # 4줄 단위 구조가 아니면 기존 방식(빈 행 제거 후 점수 기반 칸 배정)
+            non_empty = [r for r in (rec or []) if r and any((c or "").strip() for c in r)]
+            out.append(_squash_cm_record_rows_to_four(non_empty, width=tbl_w))
         return out
 
     # 헤더 이후 데이터 영역에서 stop 키워드가 등장하면 그 이전까지만 남긴다.
