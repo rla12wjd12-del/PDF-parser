@@ -280,10 +280,11 @@ def _parse_cm_careers_from_raw_table(
     if not tables:
         return []
 
-    try:
-        best = pick_best_table(tables, _cm_table_score) or []
-    except Exception:
-        best = tables[0] if tables else []
+    # [hardening stage4-b] 이전 코드는 pick_best_table(tables, _cm_table_score)를 호출했지만 _cm_table_score 는
+    # _extract_cm_projects_from_table 안에만 정의돼 있어 항상 NameError → except 에서 첫 번째 표를 썼다.
+    # 그 점수 함수는 '2. 건설사업관리 및 감리경력' 제목 행이 있는 표를 감점하는데, 실제 CM 경력 표 첫 행에
+    # 그 제목이 들어 있어 점수 선택을 살리면 오히려 잘못된 표를 고를 수 있다. 검증된 실제 동작(첫 번째 표)을 명시한다.
+    best = tables[0] if tables else []
     if not best:
         return []
 
