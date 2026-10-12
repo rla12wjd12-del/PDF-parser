@@ -463,6 +463,67 @@ def _verify_tech_career_per_page_against_pdf(
     return rows, err_items
 
 
+# [hardening stage6] pdfplumber 가 일부 글꼴의 한자를 빠뜨리거나 공백으로 바꾸는 문제 보정용
+_CJK_IDEOGRAPH = re.compile(r"[一-鿿豈-﫿]")
+_CAREER_TABLE_TOP_Y = 145.0  # 경력 표 머리글 아래(쪽 머리글의 이름 한자 제외)
+
+
+def _restore_dropped_cjk_in_careers(ctx: DocumentContext, result: dict) -> int:
+    """
+    경력 행 문자열 필드에서 pdfplumber 가 빠뜨린 한자를 PyMuPDF 단어로 되살린다.
+
+    같은 쪽의 PyMuPDF 단어 중 한자가 든 단어 W에 대해, 한자를 뺀(또는 공백으로 바뀐) 형태가
+    다음 단어의 앞 글자 문맥까지 그대로 일치할 때만 W로 바꾼다. 바꾼 횟수를 돌려준다.
+    """
+    fitz_doc = getattr(ctx, "_fitz_doc", None)
+    if fitz_doc is None:
+        return 0
+    page_cache: dict[int, list[tuple[re.Pattern, str]]] = {}
+
+    def _patterns(page_1based: int) -> list[tuple[re.Pattern, str]]:
+        if page_1based in page_cache:
+            return page_cache[page_1based]
+        pats: list[tuple[re.Pattern, str]] = []
+        idx = page_1based - 1
+        if 0 <= idx < fitz_doc.page_count:
+            words = fitz_doc[idx].get_text("words")
+            for i, w in enumerate(words):
+                text = str(w[4])
+                if w[1] <= _CAREER_TABLE_TOP_Y or w[0] < _PERIOD_COLUMN_MAX_X or not _CJK_IDEOGRAPH.search(text):
+                    continue
+                body = ""
+                for pos, ch in enumerate(text):
+                    if _CJK_IDEOGRAPH.match(ch):
+                        body += "" if pos == len(text) - 1 else r"\s?"
+                    else:
+                        body += re.escape(ch)
+                nxt = str(words[i + 1][4]) if i + 1 < len(words) else ""
+                look = rf"(?=\s*{re.escape(nxt[:2])})" if nxt else r"(?=\s|$)"
+                pats.append((re.compile(body + look), text))
+        page_cache[page_1based] = pats
+        return pats
+
+    fixed = 0
+    for section_key in ("기술경력", "건설사업관리및감리경력"):
+        for row in result.get(section_key) or []:
+            pages = [p for p in (row.get("_pdf_pages") or []) if isinstance(p, int)]
+            pats = [pt for p in pages for pt in _patterns(p)]
+            if not pats:
+                continue
+            for key, val in list(row.items()):
+                if key.startswith("_") or not isinstance(val, str) or not val:
+                    continue
+                new_val = val
+                for pat, word in pats:
+                    if word in new_val:
+                        continue
+                    new_val, n = pat.subn(word, new_val, count=1)
+                    fixed += n
+                if new_val != val:
+                    row[key] = new_val
+    return fixed
+
+
 # [hardening stage4] 경력증명서 표의 참여기간 칸 오른쪽 경계(x좌표, pt). 경력 1건 = 이 칸 안의
 # 시작 날짜(YYYY.MM 또는 YYYY.MM.DD) 바로 아래 '~' 한 쌍.
 _PERIOD_COLUMN_MAX_X = 78.0
@@ -964,6 +1025,12 @@ def parse_full_document(pdf_path: str) -> dict:
                         row["공사종류"] = normalize_worktype_field(row.get("공사종류") or "")
                     except Exception:
                         pass
+
+            # [hardening stage6] pdfplumber 가 빠뜨린 한자 복원(PyMuPDF 단어 + 앞뒤 문맥 일치 시에만)
+            try:
+                _restore_dropped_cjk_in_careers(ctx, result)
+            except Exception as e:
+                ctx.errors.append({"stage": "restore_cjk", "page": -1, "error": repr(e)})
 
             # 4. 요약 페이지 파싱 (분야별 참여기간 인정일)
             print(f"\n[4/4] 요약 페이지 파싱 시작...")
