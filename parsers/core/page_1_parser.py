@@ -3011,6 +3011,10 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
         # 4) 상훈: 0건이면 parse_award_info로 폴백 (표/텍스트 기반, fitz 없이도 동작)
         try:
             if not result.get("상훈"):
+                # [수정] 상훈 칸이 차면 다음 쪽 상훈 칸으로 이어진다(김권·이상태 등). 첫 쪽에서 멈추지 않고
+                # 기술경력 전까지 모든 쪽의 수여일 레코드를 이어붙인다. '해당없음'은 어느 쪽에도 없을 때만 쓴다.
+                dated: list = []
+                first_nonempty: list = []
                 for pg_idx in range(min(4, ctx.total_pages)):
                     if "1. 기술경력" in (ctx.get_text(pg_idx) or ""):
                         break
@@ -3018,9 +3022,12 @@ def parse_page_1(ctx: DocumentContext, page_num: int = 0) -> Dict[str, Any]:
                     if pg is None:
                         continue
                     aw = parse_award_info(pg)
-                    if aw:
-                        result["상훈"] = aw
-                        break
+                    if aw and not first_nonempty:
+                        first_nonempty = aw
+                    for a in aw or []:
+                        if re.match(r"^\d{4}-\d{2}-\d{2}$", str(a.get("수여일") or "").strip()) and a not in dated:
+                            dated.append(a)
+                result["상훈"] = dated or first_nonempty
                 # 여전히 0건이면 schema 유지용 해당없음 1행
                 if not result.get("상훈"):
                     result["상훈"] = [dict(AWARD_NOT_APPLICABLE_TEMPLATE)]

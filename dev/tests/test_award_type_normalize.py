@@ -18,6 +18,7 @@ from parsers.core.section_parsers import (
     _split_merged_award_triples,
     _split_institution_overflow_award_type,
     _sanitize_award_institution_field,
+    _strip_institution_prefix_from_award_type,
 )
 
 
@@ -97,6 +98,37 @@ class TestAwardTypeNormalize(unittest.TestCase):
         self.assertEqual(_normalize_award_type_text("공로표창장[제195호]"), "공로표창장[제195호]")
         # 앞에 잡음이 붙은 경우는 여전히 가장 앞 토큰부터 자른다.
         self.assertEqual(_normalize_award_type_text("장[ 21337] 표창장[21337]"), "표창장[21337]")
+
+    def test_normalize_keeps_prefix_glued_to_token(self):
+        self.assertEqual(
+            _normalize_award_type_text("석탑산업훈장(대통령)[제2501호]"), "석탑산업훈장(대통령)[제2501호]"
+        )
+        self.assertEqual(_normalize_award_type_text("최우수상(장관)[제2597호]"), "최우수상(장관)[제2597호]")
+
+    def test_institution_prefix_strip_keeps_type_named_after_institution(self):
+        self.assertEqual(
+            _strip_institution_prefix_from_award_type("서울특별시", "서울특별시건설상[제196호]"),
+            "서울특별시건설상[제196호]",
+        )
+        self.assertEqual(
+            _strip_institution_prefix_from_award_type("한국수자원공사", "한국수자원공사 표창패"), "표창패"
+        )
+        self.assertEqual(
+            _strip_institution_prefix_from_award_type("한국수자원공사", "한국수자원공사표창장[제1호]"),
+            "표창장[제1호]",
+        )
+
+    def test_same_date_fragments_and_resplits_are_dropped(self):
+        awards = [
+            {"수여일": "2003-12-31", "수여기관": "부산지방국토관리청", "종류및근거": "표창장[제897호]"},
+            {"수여일": "2003-12-31", "수여기관": "관리청", "종류및근거": "표창장[호]"},
+            {"수여일": "2017-06-23", "수여기관": "국토교통부", "종류및근거": "최우수상(장관)[제2597호]"},
+            {"수여일": "2017-06-23", "수여기관": "국토교통부최", "종류및근거": "우수상(장관)[제2597호]"},
+        ]
+        self.assertEqual(
+            _drop_fragment_awards_when_well_formed_exists(awards),
+            [awards[0], awards[2]],
+        )
 
     def test_institution_with_slash_is_kept(self):
         self.assertEqual(_sanitize_award_institution_field("건설부/총무", "표창장"), "건설부/총무")
