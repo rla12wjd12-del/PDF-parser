@@ -102,7 +102,9 @@ _AWARD_SECTION_END = re.compile(
     r"^\s*(?:벌점\s*및\s*제재사항?|근무처|교육훈련|국가기술자격|1\.\s*기술경력|2\.\s*건설사업관리)\s*$"
     r"|^\s*(?:벌점\s*및\s*제재|근무처\s+근무기간|교육훈련\s+교육기간)"
     # // [수정] 상훈 블록 직후 '벌점 *해당없음*' 단독 줄은 섹션 종료로 인식(종류및근거·다음 행 병합 오염 방지)
-    r"|^\s*벌점\s*[*＊]?\s*해당없음\s*[*＊]?\s*$",
+    r"|^\s*벌점\s*[*＊]?\s*해당없음\s*[*＊]?\s*$"
+    # [수정] 상훈이 이어지는 2쪽 등은 벌점 칸이 비어 '벌점' 한 단어만 남는다(이상태·김권 샘플)
+    r"|^\s*벌점\s*$",
     re.MULTILINE,
 )
 # // [수정] '표창'이 '표창장' 접두로 먼저 매칭되어 수여기관/종류 경계가 깨지지 않도록,
@@ -335,11 +337,12 @@ def _normalize_award_type_text(s: str) -> str:
     # 표/셀 분리로 타입 토큰 앞쪽이 깨져 앞에 잡음이 붙는 케이스 제거:
     # 예) '장[ 21337] 표창장[21337]' -> '표창장[21337]'
     # 예) '...기여] 감사장[감리원...' 처럼 앞에 설명이 붙으면 '감사장[...]'부터로 절단
-    for tok in _AWARD_TYPE_TOKENS:
-        pos = t.find(tok)
-        if pos > 0:
-            t = t[pos:].strip()
-            break
+    # [수정] 토큰 순서대로 찾으면 '공로표창장[…]'에서 위치 0의 '공로표창장'은 건너뛰고
+    # 위치 2의 '표창장'에서 잘라 '공로'가 사라진다 → 가장 앞에 나오는 토큰 위치로만 자른다.
+    # 토큰에 한 단어로 붙은 앞말('석탑산업훈장'·'최우수상')은 종류명의 일부이므로 자르지 않는다.
+    pos = _earliest_award_type_token_pos(t)
+    if pos and (re.search(r"[\[\]\s]", t[:pos]) or not re.match(r"[가-힣A-Za-z0-9]", t[pos - 1])):
+        t = t[pos:].strip()
     t = re.sub(r"\s+", " ", t).strip()
 
     # // [수정] 벌점 섹션(해당없음) 문자열이 상훈 종류/근거에 붙는 PDF·표 병합 유입 제거
@@ -551,6 +554,92 @@ def _norm_award_key_inst(s: str) -> str:
     return re.sub(r"\s+", "", (s or "").strip())
 
 
+def _strip_institution_prefix_from_award_type(inst: str, typ: str) -> str:
+    """
+    종류및근거 앞에 기관명이 붙는 오염을 제거한다.
+    1) '기관명 ...' 2) 공백이 사라진 '기관명표창장...' 3) 기관명 끝 1글자가 잘린 '한국수자원공 표창패'
+    // [수정] 뗀 나머지가 상훈 토큰으로 시작하거나 기관명 뒤가 공백일 때만 뗀다.
+    기관명으로 시작하는 종류명('서울특별시' + '서울특별시건설상[…]')이 '건설상'으로 잘리지 않게 한다.
+    """
+
+    def _ok(rest: str) -> bool:
+        return rest[:1].isspace() or _earliest_award_type_token_pos(rest.strip()) == 0
+
+    if typ.startswith(inst):
+        rest = typ[len(inst) :]
+        return rest.strip() if _ok(rest) else typ
+    inst_c = inst.replace(" ", "")
+    if typ.replace(" ", "").startswith(inst_c):
+        rest = typ.replace(" ", "")[len(inst_c) :].strip()
+        return rest if _ok(rest) else typ
+    if len(inst) >= 2 and typ.startswith(inst[:-1]):
+        rest = typ[len(inst[:-1]) :]
+        return rest.strip() if _ok(rest) else typ
+    return typ
+
+
+def _is_well_formed_award_record(a: Dict[str, Any]) -> bool:
+    # [수정] 선 기반 표처럼 셀이 온전히 잡힌 레코드인지 판정: 기관명에 종류 파편이 없고,
+    # 종류및근거가 상훈 종류 토큰으로 시작하며 대괄호가 닫혀 있어야 한다.
+    # 토큰이 없는 종류('새서울상')는 공백·대괄호 없는 한 덩어리일 때만 인정한다
+    # (칸 분할 파편은 조각을 공백으로 이어붙여 '울 상'처럼 공백이 생긴다).
+    inst = str(a.get("수여기관") or "").replace("\n", " ").strip()
+    typ = str(a.get("종류및근거") or "").replace("\n", " ").strip()
+    if not inst or not typ:
+        return False
+    if inst in _AMBIG_SHORT_ORG_LIKE_AWARD_WORDS or _earliest_award_type_token_pos(inst) is not None:
+        return False
+    pos = _earliest_award_type_token_pos(typ)
+    # 토큰에 한 단어로 붙은 앞말('최우수상'·'석탑산업훈장')은 종류명의 일부로 본다.
+    if pos is None or re.search(r"[\s\[\]]", typ[:pos]):
+        return not re.search(r"[\s\[\]]", typ)
+    return typ.count("[") == typ.count("]")
+
+
+def _is_truncated_institution_suffix(short: str, long: str) -> bool:
+    # [수정] 칸 분할로 기관명 앞부분이 잘린 조각인지: 'long'의 끝부분이면서 앞이 공백 경계가 아니다
+    # ('관리청' ⊂ '부산지방국토관리청'). 공백으로 붙은 여러 기관명의 한 쪽('…본부 수도방위사령관')은 아니다.
+    return bool(short) and long != short and long.endswith(short) and not long[: -len(short)][-1:].isspace()
+
+
+def _drop_fragment_awards_when_well_formed_exists(awards: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    # [수정] 같은 페이지에서 선 기반 표(온전한 셀)와 텍스트 기반 표(글자 단위로 쪼개진 셀)가
+    # 함께 잡히면, 파편 레코드('사무소 표창' | '호]')가 동일 수여일 병합 단계에서 온전한 값을 오염시킨다.
+    # 수여일별로 온전한 레코드가 하나라도 있으면 그 날짜의 온전하지 않은 레코드는 버린다.
+    good_dates = {
+        str(a.get("수여일") or "").strip()
+        for a in awards
+        if _is_well_formed_award_record(a)
+    }
+    if not good_dates:
+        return awards
+    kept = [
+        a
+        for a in awards
+        if str(a.get("수여일") or "").strip() not in good_dates or _is_well_formed_award_record(a)
+    ]
+    # 같은 날짜 안에서 (a) 기관명+종류가 공백 무시로 같은 다른 분할('국토교통부|최우수상' vs '국토교통부최|우수상')은
+    # 첫 건만, (b) 기관명이 다른 건 기관명의 앞이 잘린 조각('관리청 | 표창장[호]')이면 버린다.
+    out: List[Dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for a in kept:
+        dt = str(a.get("수여일") or "").strip()
+        inst = str(a.get("수여기관") or "").replace("\n", " ").strip()
+        key = (dt, _norm_award_key_inst(inst + str(a.get("종류및근거") or "")))
+        if dt in good_dates:
+            if key in seen:
+                continue
+            if any(
+                str(b.get("수여일") or "").strip() == dt
+                and _is_truncated_institution_suffix(inst, str(b.get("수여기관") or "").replace("\n", " ").strip())
+                for b in kept
+            ):
+                continue
+        seen.add(key)
+        out.append(a)
+    return out
+
+
 _AMBIG_SHORT_ORG_LIKE_AWARD_WORDS = frozenset(
     {"표창", "훈장", "포장", "감사", "상장", "장려", "포상", "유공"}
 )
@@ -580,8 +669,6 @@ def _sanitize_award_institution_field(inst: str, typ: str) -> str:
         return ""
     # // [수정] '새서' 등 분할 깨짐 파편(이갑덕 샘플 — '새서울상' 등)
     if inst in frozenset({"새서"}):
-        return ""
-    if "/" in inst and len(inst) <= 12 and typ and _earliest_award_type_token_pos(typ) == 0:
         return ""
     return inst
 
@@ -793,9 +880,14 @@ def _split_merged_award_triples(
     # 줄바꿈으로 1개 항목이 여러 라인으로 쪼개지면(continuation),
     # 단순 index 매핑이 깨져 "다음 날짜" 레코드로 꼬리가 넘어갈 수 있다.
     # 새 항목 시작처럼 보이지 않는 라인은 직전 라인에 이어붙인다.
-    type_lines: list[str] = []
+    # [수정] 줄 수가 수여일 수와 같고 '['가 다음 줄로 넘어가는 줄이 없으면 줄마다 1건이다.
+    # 이때 continuation 판정을 하면 종류 토큰이 없는 종류('새서울상')가 앞 건에 붙는다.
+    line_per_date = len(raw_type_lines) == len(dates) and not any(
+        _award_type_bracket_unclosed(x) for x in raw_type_lines
+    )
+    type_lines: list[str] = list(raw_type_lines) if line_per_date else []
     cur = ""
-    for ln in raw_type_lines:
+    for ln in ([] if line_per_date else raw_type_lines):
         if not cur:
             cur = ln
             continue
@@ -2213,9 +2305,13 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
 
             inst_c = _compact(inst)
             date_pat = re.compile(r"^\d{4}\.\d{2}\.\d{2}\b")
+            # [수정] 같은 날짜 줄이 여러 개면(같은 날 받은 다른 상) 기관명이 든 줄만 이 레코드의 것이다.
+            same_date_lines = sum(1 for ln in lines if date_dot in ln)
 
             for i, ln in enumerate(lines):
                 if date_dot not in ln:
+                    continue
+                if same_date_lines > 1 and inst_c not in _compact(ln):
                     continue
                 # 기존 로직은 "날짜/기관/종류"가 같은 줄에 있어야 안정적으로 동작했는데,
                 # 실제 PDF에선 (날짜) / (기관) / (종류및근거)가 각각 다른 줄로 쪼개질 수 있다.
@@ -2441,9 +2537,14 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
 
                         institution = str(row[institution_col] or "").strip() if institution_col < len(row) else ""
                         type_and_basis = str(row[type_col] or "").strip() if type_col < len(row) else ""
-                        institution, type_and_basis = _split_institution_overflow_award_type(
-                            institution, type_and_basis
-                        )
+                        # [수정] 한 셀에 여러 수여일이 줄바꿈으로 쌓인 행은 여기서 줄바꿈을 공백으로 합치면
+                        # _split_merged_award_triples 가 기관명을 건별로 나누지 못한다('진영국토관리사무소 부산광역시').
+                        # 이 경우 기관/종류 경계 보정은 건별 분리 뒤에 적용한다.
+                        multi_date_row = len(_AWARD_DATE_TOKEN.findall(award_date_raw)) > 1
+                        if not multi_date_row:
+                            institution, type_and_basis = _split_institution_overflow_award_type(
+                                institution, type_and_basis
+                            )
 
                         # ── 열 밀림/빈 스페이서 컬럼 보정 ─────────────────────────────
                         # 일부 PDF는 헤더에는 빈 컬럼('')이 끼는데, 데이터 행은 그 빈 컬럼이 채워져
@@ -2522,6 +2623,8 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
 
                         triples = _split_merged_award_triples(award_date_raw, institution, type_and_basis)
                         for d_raw, inst_p, typ_p in triples:
+                            if multi_date_row:
+                                inst_p, typ_p = _split_institution_overflow_award_type(inst_p, typ_p)
                             typ_fill = typ_p
                             if not typ_fill:
                                 typ_fill = _infer_type_and_basis_from_text(d_raw, inst_p)
@@ -2555,6 +2658,8 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                                         "종류및근거": typ_fill.replace("\n", " ").strip(),
                                     }
                                 )
+
+        awards = _drop_fragment_awards_when_well_formed_exists(awards)
 
         text_awards = _parse_awards_from_text_block(page_text)
         awards = _merge_award_lists(awards, text_awards)
@@ -2615,18 +2720,7 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                 if not typ:
                     continue
                 if inst:
-                    # 1) 정상 케이스: '기관명 ...'이 그대로 붙은 경우
-                    if typ.startswith(inst):
-                        typ = typ[len(inst) :].strip()
-                    # 2) 공백이 사라진 케이스: '기관명표창장...'
-                    elif typ.replace(" ", "").startswith(inst.replace(" ", "")):
-                        # 원문에서 안전하게 자르기 어려우므로, 앞부분의 기관명(공백 제거)을 제거한 뒤 재공백화
-                        t2 = typ.replace(" ", "")
-                        t2 = t2[len(inst.replace(" ", "")) :].strip()
-                        typ = t2
-                    # 3) 기관명이 1글자 잘린 채로 붙는 케이스(예: 기관명 끝 글자가 다음 셀로 넘어가면서 typ가 '한국수자원공 표창패'가 됨)
-                    elif len(inst) >= 2 and typ.startswith(inst[:-1]):
-                        typ = typ[len(inst[:-1]) :].strip()
+                    typ = _strip_institution_prefix_from_award_type(inst, typ)
                 typ = re.sub(r"\s+", " ", typ).strip()
                 typ = _normalize_award_type_text(typ)
                 a["종류및근거"] = typ
@@ -2652,6 +2746,17 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                         merged2.append(items[0])
                         used_ids.add(id(items[0]))
                         continue
+                    # [수정] 같은 날 받은 서로 다른 상(류현: 국토교통부 표창장(장관) / 광명시청 표창장(시장))은
+                    # 모두 온전하고 종류및근거가 서로 다르다 → 파편 병합하지 않고 각각 유지한다.
+                    if all(_is_well_formed_award_record(it) for it in items):
+                        distinct: dict[str, dict] = {}
+                        for it in items:
+                            distinct.setdefault(_norm_award_key_inst(str(it.get("종류및근거") or "")), it)
+                        if len(distinct) >= 2:
+                            merged2.extend(distinct.values())
+                            for it in items:
+                                used_ids.add(id(it))
+                            continue
                     # [수정] 기관 후보: 동일 날짜로 여러 파편이 있을 때 “여러 줄이 한 필드로 붙은 값”은 가장 길어 항상 이겼다.
                     #       실제 해당 건 기관명은 같은 시트에서 더 짧은 단일 기관 문자열 후보이다(세로 병합 셀 깨짐 대응).
                     inst_best = ""
@@ -2660,6 +2765,13 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                         inst = str(it.get("수여기관") or "").strip()
                         if inst and (not _DATE_CELL.match(inst)):
                             inst_cands.append(inst)
+                    # [수정] 다른 후보의 끝부분이 공백 경계 없이 잘린 조각('개발공사' ⊂ '(주)한국종합기술개발공사')은
+                    # 칸 분할 파편이므로 후보에서 뺀다. 공백으로 붙은 여러 기관명의 한 쪽은 그대로 둔다.
+                    inst_cands = [
+                        c
+                        for c in inst_cands
+                        if not any(_is_truncated_institution_suffix(c, o) for o in inst_cands)
+                    ]
                     if inst_cands:
 
                         def _inst_pick_key(s: str) -> tuple[int, int]:
@@ -2761,7 +2873,9 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                 if not is_fragment:
                     cleaned.append(a)
             
-            # 원래 순서(날짜순) 등으로 재정렬할 수도 있지만, 최종적으로는 parse_page_1 등에서 정렬하므로 유지
+            # [수정] 상위(parse_page_1 등)에서 상훈을 재정렬하지 않으므로, 길이순으로 섞인 순서를 PDF 원래 순서로 되돌린다.
+            original_order = {id(a): i for i, a in enumerate(awards)}
+            cleaned.sort(key=lambda a: original_order.get(id(a), len(original_order)))
             awards = cleaned
 
         # // [수정] 서로 다른 수여일 행 간 '종류및근거' 꼬리 덧붙임 제거(2패스로 연쇄 잔여 완화)
@@ -2793,14 +2907,7 @@ def parse_award_info(page) -> List[Dict[str, Any]]:
                 if not typ:
                     continue
                 if inst:
-                    if typ.startswith(inst):
-                        typ = typ[len(inst) :].strip()
-                    elif typ.replace(" ", "").startswith(inst.replace(" ", "")):
-                        t2 = typ.replace(" ", "")
-                        t2 = t2[len(inst.replace(" ", "")) :].strip()
-                        typ = t2
-                    elif len(inst) >= 2 and typ.startswith(inst[:-1]):
-                        typ = typ[len(inst[:-1]) :].strip()
+                    typ = _strip_institution_prefix_from_award_type(inst, typ)
                 typ = re.sub(r"\s+", " ", typ).strip()
                 typ = _normalize_award_type_text(typ)
                 a["종류및근거"] = typ
